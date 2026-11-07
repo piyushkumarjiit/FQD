@@ -27,6 +27,10 @@ nonPro:
   hardStopPct: 5
   hardStopRecoveryPct: 8
 
+# Minimum dwell times before state transitions or ramp steps advance.
+dwell:
+  ramp_step_min_sec: 180   # each recovery ramp step (25% -> 50% -> 100%) holds at least this long (0-3600s)
+
 # Classification rules decide each account's tier and whether FQD manages it.
 # They match the CLIProxy auth file name, first match wins. When this list is left
 # out, every account is a managed Pro account (the rule below). When you write your
