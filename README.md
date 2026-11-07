@@ -151,7 +151,7 @@ FQD always computes a status for every account. Whether it also changes routing 
 | :--- | :--- |
 | `off` | Leaves routing alone. |
 | `shadow` (default) | Works out what it would change and records it, without touching CLIProxy. |
-| `enforce` | Changes CLIProxy weights: drains accounts that are running low (weight 1, so sessions in progress finish while new sessions go elsewhere), disables exhausted ones (weight 0 and disabled), and ramps them back (25, 50, 100) after they recover. |
+| `enforce` | Changes CLIProxy weights: drains accounts that are running low (weight 1, so sessions in progress finish while new sessions go elsewhere), disables exhausted ones (weight 0 and disabled), and ramps them back (25, 50, 100) after they recover. Each step lasts at least 3 minutes by default, configurable by `dwell.ramp_step_min_sec`. |
 
 ### Turning on enforce mode
 

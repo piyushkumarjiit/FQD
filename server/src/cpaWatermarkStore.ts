@@ -29,6 +29,7 @@ function isValidEngineState(val: unknown): val is EngineState {
   if (typeof val.generation !== 'number' || !Number.isFinite(val.generation)) return false;
   if (val.tierStateEnteredAt !== undefined && !isObject(val.tierStateEnteredAt)) return false;
   if (val.rampStep !== undefined && !isObject(val.rampStep)) return false;
+  if (val.rampStepEnteredAt !== undefined && !isObject(val.rampStepEnteredAt)) return false;
   return true;
 }
 

@@ -241,6 +241,71 @@ async function run() {
     });
     assert(!negativeInterval.ok, 'Negative interval rejected');
 
+    // Default rampStepMinSec is 180
+    assertEquals(DEFAULT_WATERMARK_POLICY.pro.rampStepMinSec, 180, 'DEFAULT_WATERMARK_POLICY pro rampStepMinSec default is 180');
+    const defaultValidated = validateWatermarkPolicy({});
+    assert(defaultValidated.ok, 'Empty raw policy validates');
+    if (defaultValidated.ok) {
+      assertEquals(defaultValidated.policy.pro.rampStepMinSec, 180, 'Default rampStepMinSec is 180');
+    }
+
+    // Parse ramp_step_min_sec from dwell section
+    const dwellParsed = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: 240,
+      },
+    });
+    assert(dwellParsed.ok, 'dwell.ramp_step_min_sec parses successfully');
+    if (dwellParsed.ok) {
+      assertEquals(dwellParsed.policy.pro.rampStepMinSec, 240, 'ramp_step_min_sec parsed from dwell section');
+    }
+
+    // Fallback to pro section
+    const proParsed = validateWatermarkPolicy({
+      pro: {
+        ramp_step_min_sec: 300,
+      },
+    });
+    assert(proParsed.ok, 'pro.ramp_step_min_sec parses successfully');
+    if (proParsed.ok) {
+      assertEquals(proParsed.policy.pro.rampStepMinSec, 300, 'ramp_step_min_sec parsed from pro section');
+    }
+
+    // Bounds validation for ramp_step_min_sec: reject <0 and >3600
+    const negativeRampStep = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: -1,
+      },
+    });
+    assert(!negativeRampStep.ok, 'Negative ramp_step_min_sec (-1) rejected');
+
+    const excessiveRampStep = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: 3601,
+      },
+    });
+    assert(!excessiveRampStep.ok, 'Ramp_step_min_sec > 3600 (3601) rejected');
+
+    const zeroRampStep = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: 0,
+      },
+    });
+    assert(zeroRampStep.ok, 'ramp_step_min_sec: 0 is accepted');
+    if (zeroRampStep.ok) {
+      assertEquals(zeroRampStep.policy.pro.rampStepMinSec, 0, 'rampStepMinSec 0 parsed');
+    }
+
+    const maxRampStep = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: 3600,
+      },
+    });
+    assert(maxRampStep.ok, 'ramp_step_min_sec: 3600 is accepted');
+    if (maxRampStep.ok) {
+      assertEquals(maxRampStep.policy.pro.rampStepMinSec, 3600, 'rampStepMinSec 3600 parsed');
+    }
+
     // B4: managed strictly boolean validation
     const nonBooleanManaged = validateWatermarkPolicy({
       classification_rules: [
@@ -681,6 +746,7 @@ async function run() {
         hardStopRecoveryPct: 7,
         fallbackMinDwellSec: 350,
         recoveryDwellSec: 450,
+        rampStepMinSec: 240,
       },
       nonPro: {
         drainPct: 42,
@@ -783,6 +849,9 @@ async function run() {
       rampStep: {
         'acc-ag-1': 2,
       },
+      rampStepEnteredAt: {
+        'acc-ag-1': 2000,
+      },
     };
     store.saveState(stateWithC7, 'c7_persistence');
     const loadedC7 = store.loadState();
@@ -790,6 +859,7 @@ async function run() {
     assertEquals(loadedC7?.generation, 10, 'C-7 generation matches');
     assertEquals(loadedC7?.state.tierStateEnteredAt?.antigravity_pro, 2500, 'tierStateEnteredAt roundtrips correctly');
     assertEquals(loadedC7?.state.rampStep?.['acc-ag-1'], 2, 'rampStep roundtrips correctly');
+    assertEquals(loadedC7?.state.rampStepEnteredAt?.['acc-ag-1'], 2000, 'rampStepEnteredAt roundtrips correctly');
 
     // R2-B1 / B5: loadState() returns null on corrupt JSON in cpa_watermark_state table
     db.prepare("UPDATE cpa_watermark_state SET state_json = '{ corrupted JSON invalid!' WHERE id = 1").run();
@@ -923,6 +993,14 @@ async function run() {
         JSON.stringify({ ...validState, rampStep: badRampStep })
       );
       assertEquals(store.loadState(), null, `loadState() returns null when rampStep is ${JSON.stringify(badRampStep)}`);
+    }
+
+    // Invalid rampStepEnteredAt shapes: string, array, null
+    for (const badRampStepEnteredAt of ['not_an_object', [1, 2, 3], null]) {
+      db.prepare('UPDATE cpa_watermark_state SET state_json = ? WHERE id = 1').run(
+        JSON.stringify({ ...validState, rampStepEnteredAt: badRampStepEnteredAt })
+      );
+      assertEquals(store.loadState(), null, `loadState() returns null when rampStepEnteredAt is ${JSON.stringify(badRampStepEnteredAt)}`);
     }
 
     // Invalid policy_json validation check in loadState()
