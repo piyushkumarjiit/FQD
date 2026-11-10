@@ -28,6 +28,7 @@ function isValidEngineState(val: unknown): val is EngineState {
   if (!isObject(val.accountStates)) return false;
   if (typeof val.generation !== 'number' || !Number.isFinite(val.generation)) return false;
   if (val.tierStateEnteredAt !== undefined && !isObject(val.tierStateEnteredAt)) return false;
+  // Accept optional legacy rampStep fields for backward compatibility with older persisted state
   if (val.rampStep !== undefined && !isObject(val.rampStep)) return false;
   if (val.rampStepEnteredAt !== undefined && !isObject(val.rampStepEnteredAt)) return false;
   return true;

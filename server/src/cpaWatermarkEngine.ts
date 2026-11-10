@@ -54,6 +54,7 @@ export interface EngineState {
   accountStates: Record<string, AccountEngineState>;
   generation: number;
   tierStateEnteredAt?: Record<string, number>;
+  /** Optional legacy fields retained so older persisted state files load cleanly without ramp writes. */
   rampStep?: Record<string, number>;
   rampStepEnteredAt?: Record<string, number>;
 }
