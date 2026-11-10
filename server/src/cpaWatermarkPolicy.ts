@@ -43,7 +43,6 @@ export interface FullWatermarkPolicy extends WatermarkPolicyConfig {
     hardStopRecoveryPct: number;
     fallbackMinDwellSec: number;
     recoveryDwellSec: number;
-    rampStepMinSec: number;
   };
   nonPro: {
     drainPct: number;
@@ -79,7 +78,6 @@ export const DEFAULT_WATERMARK_POLICY: FullWatermarkPolicy = {
     hardStopRecoveryPct: 5,
     fallbackMinDwellSec: 600,
     recoveryDwellSec: 600,
-    rampStepMinSec: 180,
   },
   nonPro: {
     drainPct: DEFAULT_STATUS_LEVELS.nonPro.tightPct,
@@ -351,12 +349,16 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
     readNumber('recoveryDwellSec', 'recovery_dwell_sec', DEFAULT_WATERMARK_POLICY.pro.recoveryDwellSec, proObj),
     dwell
   );
-  const rampStepMinSec = readNumber(
-    'rampStepMinSec',
-    'ramp_step_min_sec',
-    readNumber('rampStepMinSec', 'ramp_step_min_sec', DEFAULT_WATERMARK_POLICY.pro.rampStepMinSec, proObj),
-    dwell
-  );
+  const rawRampStep =
+    getProp(dwell, 'rampStepMinSec', 'ramp_step_min_sec') ??
+    getProp(proObj, 'rampStepMinSec', 'ramp_step_min_sec') ??
+    getProp(raw, 'rampStepMinSec', 'ramp_step_min_sec');
+  if (rawRampStep !== undefined) {
+    const warnMsg =
+      "Property 'ramp_step_min_sec' / 'rampStepMinSec' is deprecated and ignored; recovery to 100% is now direct.";
+    warnings.push(warnMsg);
+    console.warn(`[cpaWatermarkPolicy] ${warnMsg}`);
+  }
 
   // 2. Percentage bounds [0, 100]
   const pctValues: [string, number][] = [
@@ -425,15 +427,11 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
     ['applyLatencySec', applyLatencySec],
     ['fallbackMinDwellSec', fallbackMinDwellSec],
     ['recoveryDwellSec', recoveryDwellSec],
-    ['rampStepMinSec', rampStepMinSec],
   ];
   for (const [name, val] of nonNegatives) {
     if (val < 0) {
       errors.push(`Duration/rate '${name}' must be non-negative, got ${val}`);
     }
-  }
-  if (rampStepMinSec > 3600) {
-    errors.push(`rampStepMinSec must be at most 3600 seconds (1h), got ${rampStepMinSec}`);
   }
 
   // 5. Classification rules validation (B4: strict boolean check and default false)
@@ -533,7 +531,6 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
         hardStopRecoveryPct: proHardStopRecoveryPct,
         fallbackMinDwellSec,
         recoveryDwellSec,
-        rampStepMinSec,
       },
       nonPro: {
         drainPct: nonProDrainPct,

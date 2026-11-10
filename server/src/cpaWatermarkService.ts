@@ -153,7 +153,6 @@ export class CpaWatermarkService {
         tierStates: {},
         accountStates: {},
         tierStateEnteredAt: {},
-        rampStep: {},
       };
     }
   }
@@ -1174,7 +1173,7 @@ export class CpaWatermarkService {
       if (engineAccount && evalResult?.reason !== 'circuit_breaker_429') {
         if (engineAccount.state === 'hard_stop') autoState = 'exhausted';
         else if (engineAccount.state === 'drain') autoState = 'draining';
-        else if (engineAccount.state === 'healthy' || engineAccount.state === 'ramping') autoState = 'healthy';
+        else if (engineAccount.state === 'healthy') autoState = 'healthy';
       }
       const classification = classifications.get(link.accountId) ?? DEFAULT_ACCOUNT_CLASSIFICATION;
 

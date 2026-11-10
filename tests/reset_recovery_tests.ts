@@ -212,7 +212,6 @@ export const enforce = (
   mode: 'enforce',
   pro: {
     ...DEFAULT_WATERMARK_POLICY.pro,
-    rampStepMinSec: 0,
   },
   ...(rules ? { classificationRules: rules } : {}),
 });
@@ -224,7 +223,6 @@ export const shadow = (
   mode: 'shadow',
   pro: {
     ...DEFAULT_WATERMARK_POLICY.pro,
-    rampStepMinSec: 0,
   },
   ...(rules ? { classificationRules: rules } : {}),
 });
@@ -277,27 +275,19 @@ async function runResetRecoveryTests() {
     await w.tracker.syncAll();
     assertEquals(w.apiCalls.idx0 - beforeCalls, 1, 'pro-a probed in next full poll');
 
-    // Engine runs ramp back: 25 -> 50 -> 100
-    // tracker.syncAll triggers onSyncAll callback which runs service.run() -> ramp step 1
-    assertEquals(w.cred('pro-a').weight, 25, 'ramp step 1 is weight 25');
-    assertEquals(w.cred('pro-a').disabled, false, 'ramp step 1 is enabled');
-
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-a').weight, 50, 'ramp step 2 is weight 50');
-    assertEquals(w.cred('pro-a').disabled, false, 'ramp step 2 is enabled');
-
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-a').weight, 100, 'ramp step 3 is weight 100');
-    assertEquals(w.cred('pro-a').disabled, false, 'ramp step 3 is enabled');
+    // Engine runs direct recovery: 0 -> 100
+    // tracker.syncAll triggers onSyncAll callback which runs service.run() -> recovered to weight 100
+    assertEquals(w.cred('pro-a').weight, 100, 'recovers directly to weight 100');
+    assertEquals(w.cred('pro-a').disabled, false, 're-enabled at weight 100');
 
     const finalRouting = w.store.getCpaLinkRouting(w.idOf('pro-a'));
     assertEquals(finalRouting?.disabledBy, undefined, 'disabledBy removed after re-enabling');
     assertEquals(finalRouting?.disabledAt, undefined, 'disabledAt removed after re-enabling');
 
     w.cleanup();
-    pass('Case 1: Pro hard stop, reset, probe, and ramp 25 -> 50 -> 100');
+    pass('Case 1: Pro hard stop, reset, probe, and direct recovery to W=100');
   } catch (err) {
-    fail('Case 1: Pro hard stop, reset, probe, and ramp', err);
+    fail('Case 1: Pro hard stop, reset, probe, and direct recovery to W=100', err);
   }
 
   // --------------------------------------------------------------------------
@@ -912,7 +902,8 @@ async function runResetRecoveryTests() {
     fakeNow += 336_000;
     circuitBreakers.clearCooldown(w.idOf('pro-c-a'));
 
-    // An engine run between cooldown end and poll writes nothing
+    // An engine run between cooldown end and poll writes nothing:
+    // Stale snapshot keeps weight at 0 and credential disabled
     const patchesCountBefore = w.patches.length;
     await w.service.run();
     routing = w.store.getCpaLinkRouting(w.idOf('pro-c-a'))!;
@@ -920,12 +911,15 @@ async function runResetRecoveryTests() {
     assertEquals(routing.cooldownUntil, fakeNow - 1000, 'cooldownUntil retained for watcher');
     assertEquals(routing.disabledBy, 'reactive_429', 'disabledBy retained for polling');
     assertEquals(w.patches.length, patchesCountBefore, 'engine run before poll writes nothing');
+    assertEquals(w.cred('pro-c-a').weight, 0, 'cooldown expiry with stale snapshot remains at W=0');
+    assertEquals(w.cred('pro-c-a').disabled, true, 'cooldown expiry with stale snapshot remains disabled');
 
     // Fresh snapshot arrives via poll
     await w.tracker.syncAll();
 
-    // Engine ramps back: 25 -> 50 -> 100
-    assertEquals(w.cred('pro-c-a').weight, 25, 'ramps to 25');
+    // Engine recovers directly to 100
+    assertEquals(w.cred('pro-c-a').weight, 100, 'recovers directly to 100 after fresh poll');
+    assertEquals(w.cred('pro-c-a').disabled, false, 're-enabled after fresh poll');
     routing = w.store.getCpaLinkRouting(w.idOf('pro-c-a'))!;
     assertEquals(routing.disabledBy, undefined, 'disabledBy removed on re-enabling write');
     assertEquals(routing.cooldownUntil, undefined, 'cooldownUntil removed on re-enabling write');
@@ -998,13 +992,9 @@ async function runResetRecoveryTests() {
     assertEquals(routing.disabledBy, 'policy', 'handed back to engine: disabledBy policy');
     assertEquals(w.cred('pro-d-a').weight, 0, 'no write to weight 1 upon expiry');
 
-    // Fresh poll and ramp: 25 -> 50 -> 100
+    // Fresh poll and direct recovery: 0 -> 100
     await w.tracker.syncAll();
-    assertEquals(w.cred('pro-d-a').weight, 25, 'ramps to 25 after hold expiry');
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-d-a').weight, 50, 'ramps to 50');
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-d-a').weight, 100, 'ramps to 100');
+    assertEquals(w.cred('pro-d-a').weight, 100, 'recovers directly to 100 after hold expiry');
 
     // 4. Return to rotation in enforce mode
     await w.service.setManualHold(idA, 'airgap', 'manual hold 2', 3600);
@@ -1017,13 +1007,9 @@ async function runResetRecoveryTests() {
     assertEquals(routing.managed, true, 'managed set to true');
     assertEquals(routing.disabledBy, 'policy', 'disabledBy set to policy');
 
-    // Ramps back after poll
+    // Recovers directly to 100 after poll
     await w.tracker.syncAll();
-    assertEquals(w.cred('pro-d-a').weight, 25, 'ramps back through 25 after return to rotation');
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-d-a').weight, 50, 'ramps to 50');
-    await w.sync.runOnce();
-    assertEquals(w.cred('pro-d-a').weight, 100, 'ramps to 100');
+    assertEquals(w.cred('pro-d-a').weight, 100, 'recovers directly to 100 after return to rotation');
 
     // Later the engine drains it when it runs low
     w.usedPct.idx0 = 70; // quota runs low (drains to weight 1)

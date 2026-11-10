@@ -28,6 +28,7 @@ function isValidEngineState(val: unknown): val is EngineState {
   if (!isObject(val.accountStates)) return false;
   if (typeof val.generation !== 'number' || !Number.isFinite(val.generation)) return false;
   if (val.tierStateEnteredAt !== undefined && !isObject(val.tierStateEnteredAt)) return false;
+  // Accept optional legacy rampStep fields for backward compatibility with older persisted state
   if (val.rampStep !== undefined && !isObject(val.rampStep)) return false;
   if (val.rampStepEnteredAt !== undefined && !isObject(val.rampStepEnteredAt)) return false;
   return true;
@@ -134,12 +135,15 @@ export class CpaWatermarkStore {
     const generation = state.generation ?? 0;
 
     // Build short summary for history query convenience
-    const summary = JSON.stringify({
+    const summaryObj: Record<string, number> = {
       gen: generation,
       tiers: Object.keys(state.tierStates || {}).length,
       accounts: Object.keys(state.accountStates || {}).length,
-      rampSteps: Object.keys(state.rampStep || {}).length,
-    });
+    };
+    if (state.rampStep) {
+      summaryObj.rampSteps = Object.keys(state.rampStep).length;
+    }
+    const summary = JSON.stringify(summaryObj);
 
     this.db.exec('SAVEPOINT cpa_wm_save');
     try {

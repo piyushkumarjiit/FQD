@@ -241,59 +241,59 @@ async function run() {
     });
     assert(!negativeInterval.ok, 'Negative interval rejected');
 
-    // Default rampStepMinSec is 180
-    assertEquals(DEFAULT_WATERMARK_POLICY.pro.rampStepMinSec, 180, 'DEFAULT_WATERMARK_POLICY pro rampStepMinSec default is 180');
     const defaultValidated = validateWatermarkPolicy({});
     assert(defaultValidated.ok, 'Empty raw policy validates');
     if (defaultValidated.ok) {
-      assertEquals(defaultValidated.policy.pro.rampStepMinSec, 180, 'Default rampStepMinSec is 180');
+      assertEquals(defaultValidated.policy, DEFAULT_WATERMARK_POLICY, 'Default validated policy matches DEFAULT_WATERMARK_POLICY');
     }
 
-    // Parse ramp_step_min_sec from dwell section
+    // Parse ramp_step_min_sec from dwell section as deprecated ignored key
     const dwellParsed = validateWatermarkPolicy({
       dwell: {
         ramp_step_min_sec: 240,
       },
     });
     assert(dwellParsed.ok, 'dwell.ramp_step_min_sec parses successfully');
-    if (dwellParsed.ok) {
-      assertEquals(dwellParsed.policy.pro.rampStepMinSec, 240, 'ramp_step_min_sec parsed from dwell section');
+    assert(
+      dwellParsed.warnings?.some((w) => w.includes('deprecated and ignored')),
+      'Deprecation warning emitted for dwell.ramp_step_min_sec'
+    );
+    if (dwellParsed.ok && defaultValidated.ok) {
+      assertEquals(
+        dwellParsed.policy,
+        defaultValidated.policy,
+        'Policy containing dwell.ramp_step_min_sec has same effective values as one without it'
+      );
     }
 
-    // Fallback to pro section
+    // Fallback to pro section also warns and validates
     const proParsed = validateWatermarkPolicy({
       pro: {
         ramp_step_min_sec: 300,
       },
     });
     assert(proParsed.ok, 'pro.ramp_step_min_sec parses successfully');
-    if (proParsed.ok) {
-      assertEquals(proParsed.policy.pro.rampStepMinSec, 300, 'ramp_step_min_sec parsed from pro section');
+    assert(
+      proParsed.warnings?.some((w) => w.includes('deprecated and ignored')),
+      'Deprecation warning emitted for pro.ramp_step_min_sec'
+    );
+    if (proParsed.ok && defaultValidated.ok) {
+      assertEquals(
+        proParsed.policy,
+        defaultValidated.policy,
+        'Policy containing pro.ramp_step_min_sec has same effective values as one without it'
+      );
     }
 
-    // Bounds validation for ramp_step_min_sec: reject <0 and >3600
-    const negativeRampStep = validateWatermarkPolicy({
-      dwell: {
-        ramp_step_min_sec: -1,
-      },
-    });
-    assert(!negativeRampStep.ok, 'Negative ramp_step_min_sec (-1) rejected');
-
-    const excessiveRampStep = validateWatermarkPolicy({
-      dwell: {
-        ramp_step_min_sec: 3601,
-      },
-    });
-    assert(!excessiveRampStep.ok, 'Ramp_step_min_sec > 3600 (3601) rejected');
-
+    // Existing configs with various values remain valid and ignore deprecated ramp_step_min_sec
     const zeroRampStep = validateWatermarkPolicy({
       dwell: {
         ramp_step_min_sec: 0,
       },
     });
-    assert(zeroRampStep.ok, 'ramp_step_min_sec: 0 is accepted');
-    if (zeroRampStep.ok) {
-      assertEquals(zeroRampStep.policy.pro.rampStepMinSec, 0, 'rampStepMinSec 0 parsed');
+    assert(zeroRampStep.ok, 'ramp_step_min_sec: 0 remains valid');
+    if (zeroRampStep.ok && defaultValidated.ok) {
+      assertEquals(zeroRampStep.policy, defaultValidated.policy, 'ramp_step_min_sec: 0 yields default effective policy');
     }
 
     const maxRampStep = validateWatermarkPolicy({
@@ -301,9 +301,19 @@ async function run() {
         ramp_step_min_sec: 3600,
       },
     });
-    assert(maxRampStep.ok, 'ramp_step_min_sec: 3600 is accepted');
-    if (maxRampStep.ok) {
-      assertEquals(maxRampStep.policy.pro.rampStepMinSec, 3600, 'rampStepMinSec 3600 parsed');
+    assert(maxRampStep.ok, 'ramp_step_min_sec: 3600 remains valid');
+    if (maxRampStep.ok && defaultValidated.ok) {
+      assertEquals(maxRampStep.policy, defaultValidated.policy, 'ramp_step_min_sec: 3600 yields default effective policy');
+    }
+
+    const defaultRampStep = validateWatermarkPolicy({
+      dwell: {
+        ramp_step_min_sec: 180,
+      },
+    });
+    assert(defaultRampStep.ok, 'ramp_step_min_sec: 180 remains valid');
+    if (defaultRampStep.ok && defaultValidated.ok) {
+      assertEquals(defaultRampStep.policy, defaultValidated.policy, 'ramp_step_min_sec: 180 yields default effective policy');
     }
 
     // B4: managed strictly boolean validation
@@ -746,7 +756,6 @@ async function run() {
         hardStopRecoveryPct: 7,
         fallbackMinDwellSec: 350,
         recoveryDwellSec: 450,
-        rampStepMinSec: 240,
       },
       nonPro: {
         drainPct: 42,
