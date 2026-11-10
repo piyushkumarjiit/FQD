@@ -43,7 +43,6 @@ export interface FullWatermarkPolicy extends WatermarkPolicyConfig {
     hardStopRecoveryPct: number;
     fallbackMinDwellSec: number;
     recoveryDwellSec: number;
-    rampStepMinSec?: number;
   };
   nonPro: {
     drainPct: number;

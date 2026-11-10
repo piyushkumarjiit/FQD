@@ -11,7 +11,6 @@ export interface WatermarkPolicyConfig {
     hardStopRecoveryPct?: number;
     fallbackMinDwellSec?: number; // default 600 (10 mins)
     recoveryDwellSec?: number; // default 600 (10 mins)
-    rampStepMinSec?: number; // deprecated and ignored
   };
   nonPro?: {
     drainPct?: number; // default: DEFAULT_WATERMARK_POLICY.nonPro
