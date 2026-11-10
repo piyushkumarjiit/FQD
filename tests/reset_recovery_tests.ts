@@ -210,6 +210,10 @@ export const enforce = (
 ): FullWatermarkPolicy => ({
   ...structuredClone(DEFAULT_WATERMARK_POLICY),
   mode: 'enforce',
+  pro: {
+    ...DEFAULT_WATERMARK_POLICY.pro,
+    rampStepMinSec: 0,
+  },
   ...(rules ? { classificationRules: rules } : {}),
 });
 
@@ -218,6 +222,10 @@ export const shadow = (
 ): FullWatermarkPolicy => ({
   ...structuredClone(DEFAULT_WATERMARK_POLICY),
   mode: 'shadow',
+  pro: {
+    ...DEFAULT_WATERMARK_POLICY.pro,
+    rampStepMinSec: 0,
+  },
   ...(rules ? { classificationRules: rules } : {}),
 });
 

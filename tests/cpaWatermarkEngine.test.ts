@@ -566,19 +566,40 @@ console.log('\nSuite 11: Anti-Thundering-Herd Ramping Sequence');
   state = res.nextState;
   assert(res.targets.get('p1')?.targetWeight === 25, 'Ramping: p1 recovers with first ramp step W=25');
   assert(state.accountStates['p1']?.state === 'ramping', 'Ramping: state is ramping on step 1');
+  assert(state.rampStep?.['p1'] === 1, 'Ramping: rampStep is 1');
+  assert(state.rampStepEnteredAt?.['p1'] === now + 1000, 'Ramping: rampStepEnteredAt recorded for step 1');
 
-  // Step 2: Second tick -> W=50
+  // Run 1s later: dwell time (180s) has NOT elapsed -> hold at W=25
   res = computeWatermarkTargets(snapRecov, policy, state, now + 2000);
+  state = res.nextState;
+  assert(res.targets.get('p1')?.targetWeight === 25, 'Ramping: p1 holds at W=25 before dwell elapsed');
+  assert(state.accountStates['p1']?.state === 'ramping', 'Ramping: state is ramping on step 1 hold');
+  assert(res.targets.get('p1')?.reason === 'ramping_25', 'Ramping: reason is ramping_25 on hold');
+  assert(state.rampStep?.['p1'] === 1, 'Ramping: rampStep stays 1 on hold');
+  assert(state.rampStepEnteredAt?.['p1'] === now + 1000, 'Ramping: rampStepEnteredAt preserved on hold');
+
+  // Step 2: Run 181s later (now + 1000 + 181000) -> progresses to W=50
+  res = computeWatermarkTargets(snapRecov, policy, state, now + 1000 + 181000);
   state = res.nextState;
   assert(res.targets.get('p1')?.targetWeight === 50, 'Ramping: p1 progresses to second ramp step W=50');
   assert(state.accountStates['p1']?.state === 'ramping', 'Ramping: state is ramping on step 2');
+  assert(res.targets.get('p1')?.reason === 'ramping_50', 'Ramping: reason is ramping_50');
+  assert(state.rampStep?.['p1'] === 2, 'Ramping: rampStep is 2');
+  assert(state.rampStepEnteredAt?.['p1'] === now + 1000 + 181000, 'Ramping: rampStepEnteredAt updated for step 2');
 
-  // Step 3: Third tick -> W=100
-  res = computeWatermarkTargets(snapRecov, policy, state, now + 3000);
+  // Run 1s later: dwell time for step 2 has NOT elapsed -> hold at W=50
+  res = computeWatermarkTargets(snapRecov, policy, state, now + 1000 + 182000);
+  state = res.nextState;
+  assert(res.targets.get('p1')?.targetWeight === 50, 'Ramping: p1 holds at W=50 before dwell elapsed');
+  assert(res.targets.get('p1')?.reason === 'ramping_50', 'Ramping: reason is ramping_50 on hold');
+
+  // Step 3: Run 181s after step 2 -> progresses to full capacity W=100
+  res = computeWatermarkTargets(snapRecov, policy, state, now + 1000 + 181000 + 181000);
   state = res.nextState;
   assert(res.targets.get('p1')?.targetWeight === 100, 'Ramping: p1 progresses to full capacity W=100');
   assert(state.accountStates['p1']?.state === 'healthy', 'Ramping: state is healthy on step 3');
   assert(state.rampStep?.['p1'] === undefined, 'Ramping: rampStep cleaned up once W=100');
+  assert(state.rampStepEnteredAt?.['p1'] === undefined, 'Ramping: rampStepEnteredAt cleaned up once W=100');
 
   // Fallback exit ramp:
   // Setup 3 accounts in collective fallback
@@ -605,16 +626,69 @@ console.log('\nSuite 11: Anti-Thundering-Herd Ramping Sequence');
   assert(res.targets.get('f1')?.targetWeight === 25, 'Fallback exit: f1 ramps at W=25');
   assert(res.targets.get('f2')?.targetWeight === 25, 'Fallback exit: f2 ramps at W=25');
 
-  // Next tick: W=50
+  // Run 1s later: holds at W=25
   res = computeWatermarkTargets(snapsRecovered, policy, fbState, exitNow + 1000);
+  fbState = res.nextState;
+  assert(res.targets.get('f1')?.targetWeight === 25, 'Fallback exit: f1 holds at W=25 before dwell');
+
+  // Next eligible tick: W=50 (after 181s)
+  res = computeWatermarkTargets(snapsRecovered, policy, fbState, exitNow + 181000);
   fbState = res.nextState;
   assert(res.targets.get('f1')?.targetWeight === 50, 'Fallback exit: f1 ramps to W=50');
 
-  // Next tick: W=100
-  res = computeWatermarkTargets(snapsRecovered, policy, fbState, exitNow + 2000);
+  // Next eligible tick: W=100 (after another 181s)
+  res = computeWatermarkTargets(snapsRecovered, policy, fbState, exitNow + 362000);
   fbState = res.nextState;
   assert(res.targets.get('f1')?.targetWeight === 100, 'Fallback exit: f1 reaches W=100');
   assert(fbState.rampStep?.['f1'] === undefined, 'Fallback exit: rampStep cleaned up after reaching W=100');
+  assert(fbState.rampStepEnteredAt?.['f1'] === undefined, 'Fallback exit: rampStepEnteredAt cleaned up after reaching W=100');
+
+  // rampStepMinSec: 0 allows 1s advances
+  const zeroDwellPolicy: WatermarkPolicyConfig = { mode: 'enforce', pro: { rampStepMinSec: 0 } };
+  let zdState = makeInitialState();
+  res = computeWatermarkTargets(snapHard, zeroDwellPolicy, zdState, now);
+  zdState = res.nextState;
+  res = computeWatermarkTargets(snapRecov, zeroDwellPolicy, zdState, now + 1000);
+  zdState = res.nextState;
+  assert(res.targets.get('p1')?.targetWeight === 25, 'Zero dwell: step 1 is W=25');
+  res = computeWatermarkTargets(snapRecov, zeroDwellPolicy, zdState, now + 2000);
+  zdState = res.nextState;
+  assert(res.targets.get('p1')?.targetWeight === 50, 'Zero dwell: step 2 advances in 1s to W=50');
+  res = computeWatermarkTargets(snapRecov, zeroDwellPolicy, zdState, now + 3000);
+  zdState = res.nextState;
+  assert(res.targets.get('p1')?.targetWeight === 100, 'Zero dwell: step 3 advances in 1s to W=100');
+
+  // Prior state with rampStep set but no rampStepEnteredAt advances immediately
+  let legacyState = makeInitialState();
+  legacyState.accountStates['p1'] = { state: 'ramping', enteredAt: now - 5000, targetWeight: 25 };
+  legacyState.rampStep = { p1: 1 };
+  // rampStepEnteredAt is undefined
+  res = computeWatermarkTargets(snapRecov, policy, legacyState, now);
+  assert(res.targets.get('p1')?.targetWeight === 50, 'Legacy state: missing rampStepEnteredAt advances to W=50');
+  assert(res.nextState.rampStep?.['p1'] === 2, 'Legacy state: advances to step 2');
+  assert(res.nextState.rampStepEnteredAt?.['p1'] === now, 'Legacy state: sets rampStepEnteredAt for step 2');
+
+  // Hard stop during ramp clears both rampStep and rampStepEnteredAt
+  let rampingState = makeInitialState();
+  rampingState.accountStates['p1'] = { state: 'ramping', enteredAt: now - 1000, targetWeight: 25 };
+  rampingState.rampStep = { p1: 1 };
+  rampingState.rampStepEnteredAt = { p1: now - 1000 };
+
+  res = computeWatermarkTargets(snapHard, policy, rampingState, now);
+  assert(res.targets.get('p1')?.targetWeight === 0, 'Hard stop during ramp forces W=0');
+  assert(res.nextState.rampStep?.['p1'] === undefined, 'Hard stop during ramp clears rampStep');
+  assert(res.nextState.rampStepEnteredAt?.['p1'] === undefined, 'Hard stop during ramp clears rampStepEnteredAt');
+
+  // Cooldown / quarantine during ramp clears both rampStep and rampStepEnteredAt
+  const snapCooldown = [
+    makeProSnapshot('p1', 50, { currentWeight: 25, isCooldown: true }),
+    makeProSnapshot('p2', 80, { currentWeight: 100 }),
+    makeProSnapshot('p3', 80, { currentWeight: 100 }),
+  ];
+  res = computeWatermarkTargets(snapCooldown, policy, rampingState, now);
+  assert(res.targets.get('p1')?.targetWeight === 0, 'Cooldown during ramp forces W=0');
+  assert(res.nextState.rampStep?.['p1'] === undefined, 'Cooldown during ramp clears rampStep');
+  assert(res.nextState.rampStepEnteredAt?.['p1'] === undefined, 'Cooldown during ramp clears rampStepEnteredAt');
 }
 
 // -------------------------------------------------------------

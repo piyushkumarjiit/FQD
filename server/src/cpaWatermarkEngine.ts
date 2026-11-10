@@ -11,6 +11,7 @@ export interface WatermarkPolicyConfig {
     hardStopRecoveryPct?: number;
     fallbackMinDwellSec?: number; // default 600 (10 mins)
     recoveryDwellSec?: number; // default 600 (10 mins)
+    rampStepMinSec?: number; // default 180 (3 mins)
   };
   nonPro?: {
     drainPct?: number; // default: DEFAULT_WATERMARK_POLICY.nonPro
@@ -56,6 +57,7 @@ export interface EngineState {
   generation: number;
   tierStateEnteredAt?: Record<string, number>;
   rampStep?: Record<string, number>;
+  rampStepEnteredAt?: Record<string, number>;
 }
 
 /**
@@ -187,6 +189,7 @@ export function computeWatermarkTargets(
         tierStateEnteredAt: { ...(prevState?.tierStateEnteredAt ?? {}) },
         accountStates: { ...(prevState?.accountStates ?? {}) },
         rampStep: { ...(prevState?.rampStep ?? {}) },
+        rampStepEnteredAt: { ...(prevState?.rampStepEnteredAt ?? {}) },
         generation: (prevState?.generation ?? 0) + 1,
       },
       writeBatch: [],
@@ -202,6 +205,7 @@ export function computeWatermarkTargets(
   const burnRateMax = policy.burnRateMax ?? DEFAULT_BURN_RATE_MAX;
 
   const proCfg = { ...PRO_DEFAULTS, ...(policy.pro ?? {}) };
+  const rampStepMinSec = proCfg.rampStepMinSec ?? 180;
   const nonProCfg = { ...NON_PRO_DEFAULTS, ...(policy.nonPro ?? {}) };
 
   // Group snapshots by provider pool
@@ -222,6 +226,14 @@ export function computeWatermarkTargets(
   };
   const nextRampStep: Record<string, number> = {
     ...(prevState?.rampStep ?? {}),
+  };
+  const nextRampStepEnteredAt: Record<string, number> = {
+    ...(prevState?.rampStepEnteredAt ?? {}),
+  };
+
+  const clearRamp = (name: string): void => {
+    delete nextRampStep[name];
+    delete nextRampStepEnteredAt[name];
   };
 
   for (const [provider, pool] of providerPools.entries()) {
@@ -464,12 +476,12 @@ export function computeWatermarkTargets(
         targetWeight = 0;
         reason = 'cooldown';
         isEmergency = true;
-        delete nextRampStep[snap.cpaName];
+        clearRamp(snap.cpaName);
       } else if (ev.initialState === 'hard_stop') {
         targetWeight = 0;
         reason = 'hard_stop';
         isEmergency = true;
-        delete nextRampStep[snap.cpaName];
+        clearRamp(snap.cpaName);
       } else if (nextTierState === 'collective_fallback') {
         // Fallback: Staleness (#4) outranks Fallback (#5)
         // - Accounts in state 'unknown' (stale with no prior state) stay W=0
@@ -479,17 +491,17 @@ export function computeWatermarkTargets(
         if (ev.initialState === 'unknown') {
           targetWeight = 0;
           reason = ev.initialReason;
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
         } else if (ev.isStale && ev.initialState === 'drain') {
           targetWeight = 1;
           reason = ev.initialReason;
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
           proEligibleCount++;
         } else {
           targetWeight = 100;
           reason = 'collective_fallback';
           finalState = 'healthy';
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
           proEligibleCount++;
         }
       } else {
@@ -497,7 +509,7 @@ export function computeWatermarkTargets(
         if (ev.initialState === 'drain') {
           targetWeight = 1;
           reason = ev.initialReason;
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
           proEligibleCount++;
         } else if (ev.initialState === 'healthy') {
           // Anti-thundering herd recovery ramp check
@@ -515,22 +527,47 @@ export function computeWatermarkTargets(
             if (currentRamp === 0) {
               targetWeight = 25;
               nextRampStep[snap.cpaName] = 1;
+              nextRampStepEnteredAt[snap.cpaName] = now;
               finalState = 'ramping';
               reason = 'ramping_25';
             } else if (currentRamp === 1) {
-              targetWeight = 50;
-              nextRampStep[snap.cpaName] = 2;
-              finalState = 'ramping';
-              reason = 'ramping_50';
+              const stepEnteredAt = nextRampStepEnteredAt[snap.cpaName];
+              const canAdvance =
+                stepEnteredAt === undefined || now - stepEnteredAt >= rampStepMinSec * 1000;
+              if (canAdvance) {
+                targetWeight = 50;
+                nextRampStep[snap.cpaName] = 2;
+                nextRampStepEnteredAt[snap.cpaName] = now;
+                finalState = 'ramping';
+                reason = 'ramping_50';
+              } else {
+                targetWeight = 25;
+                finalState = 'ramping';
+                reason = 'ramping_25';
+              }
+            } else if (currentRamp === 2) {
+              const stepEnteredAt = nextRampStepEnteredAt[snap.cpaName];
+              const canAdvance =
+                stepEnteredAt === undefined || now - stepEnteredAt >= rampStepMinSec * 1000;
+              if (canAdvance) {
+                targetWeight = 100;
+                clearRamp(snap.cpaName);
+                finalState = 'healthy';
+                reason = 'healthy';
+              } else {
+                targetWeight = 50;
+                finalState = 'ramping';
+                reason = 'ramping_50';
+              }
             } else {
               targetWeight = 100;
-              delete nextRampStep[snap.cpaName];
+              clearRamp(snap.cpaName);
               finalState = 'healthy';
               reason = 'healthy';
             }
           } else {
             targetWeight = 100;
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
             finalState = 'healthy';
             reason = 'healthy';
           }
@@ -538,7 +575,7 @@ export function computeWatermarkTargets(
         } else if (ev.initialState === 'unknown') {
           targetWeight = 0;
           reason = 'unknown_telemetry';
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
         }
       }
 
@@ -685,7 +722,7 @@ export function computeWatermarkTargets(
           reason = 'cooldown';
           state = 'cooldown';
           isEmergency = true;
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
         } else {
           const quotaEff = snap.quotaEffectivePct;
           const quotaProj = projectQuota(quotaEff, snap.burnRatePerMin, snap.stalenessSec, horizonSec, burnRateMax);
@@ -704,12 +741,12 @@ export function computeWatermarkTargets(
             reason = 'hard_stop';
             state = 'hard_stop';
             isEmergency = true;
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
           } else if (snap.stalenessSec > 300) {
             targetWeight = 0;
             reason = 'stale_telemetry';
             state = 'unknown';
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
           } else {
             // Non-Pro drain hand-off at the policy nonPro.drainPct (recovery at drainRecoveryPct)
             const wasDrain = prev?.state === 'drain';
@@ -725,7 +762,7 @@ export function computeWatermarkTargets(
               targetWeight = 1;
               reason = 'drain';
               state = 'drain';
-              delete nextRampStep[snap.cpaName];
+              clearRamp(snap.cpaName);
             } else if (snap.cpaName === activeCandidateName) {
               // Active sticky candidate gets W = 100
               targetWeight = 100;
@@ -769,7 +806,7 @@ export function computeWatermarkTargets(
           reason = 'cooldown';
           state = 'cooldown';
           isEmergency = true;
-          delete nextRampStep[snap.cpaName];
+          clearRamp(snap.cpaName);
         } else {
           const quotaEff = snap.quotaEffectivePct;
           const quotaProj = projectQuota(quotaEff, snap.burnRatePerMin, snap.stalenessSec, horizonSec, burnRateMax);
@@ -788,18 +825,18 @@ export function computeWatermarkTargets(
             reason = 'hard_stop';
             state = 'hard_stop';
             isEmergency = true;
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
           } else if (snap.stalenessSec > 300) {
             targetWeight = 0;
             reason = 'stale_telemetry';
             state = 'unknown';
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
           } else if (prev?.targetWeight === 100) {
             // Was active, transition through drain (W = 1) to allow in-flight turns to finish
             targetWeight = 1;
             reason = 'cross_tier_drain_stepdown';
             state = 'drain';
-            delete nextRampStep[snap.cpaName];
+            clearRamp(snap.cpaName);
           } else {
             // Standby accounts (targetWeight === 0) and stepped-down accounts stay at W = 0
             targetWeight = 0;
@@ -858,7 +895,7 @@ export function computeWatermarkTargets(
         }
         nextAccountStates[snap.cpaName].targetWeight = 0;
         nextAccountStates[snap.cpaName].state = 'hard_stop';
-        delete nextRampStep[snap.cpaName];
+        clearRamp(snap.cpaName);
         invariantViolations.push({
           accountId: snap.accountId,
           invariant: 'Invariant 1 (Hard Safety Floor)',
@@ -882,7 +919,7 @@ export function computeWatermarkTargets(
         }
         nextAccountStates[snap.cpaName].targetWeight = 0;
         nextAccountStates[snap.cpaName].state = 'cooldown';
-        delete nextRampStep[snap.cpaName];
+        clearRamp(snap.cpaName);
         invariantViolations.push({
           accountId: snap.accountId,
           invariant: 'Invariant 2 (Cooldown / 429 Isolation)',
@@ -995,6 +1032,7 @@ export function computeWatermarkTargets(
       tierStateEnteredAt: nextTierStateEnteredAt,
       accountStates: nextAccountStates,
       rampStep: nextRampStep,
+      rampStepEnteredAt: nextRampStepEnteredAt,
       generation: (prevState?.generation ?? 0) + 1,
     },
     writeBatch,
