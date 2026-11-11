@@ -69,8 +69,40 @@ export function reasonOf(data: PanelData, a: Account): string {
   }
   if (a.latestSnapshot?.status === 'rate_limited') return `The provider is rate-limiting this account, so callers may get 429 errors.${back}`;
   if (!b) return 'The provider has not reported any quota for this account yet.';
-  if (st === 'exhausted') return `${b.label} at ${b.remaining}%, at or below the policy hard stop (${lv.exhaustedPct}%). Callers routed here may get 429 errors.${back}`;
-  if (st === 'tight') return `${b.label} at ${b.remaining}%, at or below the policy drain level (${lv.tightPct}%).${back}`;
+  if (st === 'exhausted') {
+    if (b.remaining <= lv.exhaustedPct) {
+      return `${b.label} at ${b.remaining}%, at or below the policy hard stop (${lv.exhaustedPct}%). Callers routed here may get 429 errors.${back}`;
+    }
+    const v = viewOf(data, a.id);
+    const breached = v?.windows?.find((w) => w.currentRemainingPct <= lv.exhaustedPct);
+    if (breached) {
+      const wBack = breached.resetsAt ? ` Resets in ${untilText(breached.resetsAt)}.` : '';
+      return `${breached.label} at ${Math.round(breached.currentRemainingPct)}%, at or below the policy hard stop (${lv.exhaustedPct}%). Callers routed here may get 429 errors.${wBack}`;
+    }
+    const proj = v?.windows?.find((w) => w.projectedRemainingPct <= lv.exhaustedPct);
+    if (proj || (v?.burnRatePerMin ?? 0) > 0) {
+      const runway = v?.runwayMinutes ? ` in ~${v.runwayMinutes}m` : ' soon';
+      return `High request velocity: projected to reach the hard stop (${lv.exhaustedPct}%)${runway} (${b.label} at ${b.remaining}%). Callers routed here may get 429 errors.${back}`;
+    }
+    return `Stopped by routing policy to protect quota (${b.label} at ${b.remaining}%). Callers routed here may get 429 errors.${back}`;
+  }
+  if (st === 'tight') {
+    if (b.remaining <= lv.tightPct) {
+      return `${b.label} at ${b.remaining}%, at or below the policy drain level (${lv.tightPct}%).${back}`;
+    }
+    const v = viewOf(data, a.id);
+    const breached = v?.windows?.find((w) => w.currentRemainingPct <= lv.tightPct);
+    if (breached) {
+      const wBack = breached.resetsAt ? ` Resets in ${untilText(breached.resetsAt)}.` : '';
+      return `${breached.label} at ${Math.round(breached.currentRemainingPct)}%, at or below the policy drain level (${lv.tightPct}%).${wBack}`;
+    }
+    const proj = v?.windows?.find((w) => w.projectedRemainingPct <= lv.tightPct);
+    if (proj || (v?.burnRatePerMin ?? 0) > 0) {
+      const runway = v?.runwayMinutes ? ` in ~${v.runwayMinutes}m` : ' soon';
+      return `High request velocity: projected to reach the drain level (${lv.tightPct}%)${runway} (${b.label} at ${b.remaining}%).${back}`;
+    }
+    return `Draining traffic under routing policy (${b.label} at ${b.remaining}%).${back}`;
+  }
   return `Lowest quota: ${b.label} at ${b.remaining}%.`;
 }
 
