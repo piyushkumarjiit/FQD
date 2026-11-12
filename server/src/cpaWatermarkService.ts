@@ -107,6 +107,13 @@ export class CpaWatermarkService {
   private lastRunBlocked: string | null = null;
   private lastWritesCount = { ok: 0, error: 0, skipped: 0 };
   private activeWeightsMap: Record<string, number> = {};
+  private activeExtractionAccounts = new Set<string>();
+  private lastReasonsByCpaName = new Map<string, string>();
+
+  /** Returns true when the account is actively burning down inside its final extraction window. */
+  isExtractionActive(accountId: string): boolean {
+    return this.activeExtractionAccounts.has(accountId);
+  }
 
   // Token bucket rate limiting
   private tokens: number;
@@ -333,6 +340,25 @@ export class CpaWatermarkService {
     // Update in-memory engine state
     this.engineState = computation.nextState;
 
+    // Track active extraction-window accounts for alert suppression and logging
+    const nextExtractionAccounts = new Set<string>();
+    this.lastReasonsByCpaName.clear();
+    for (const snap of snapshots) {
+      const dec = computation.targets.get(snap.cpaName);
+      if (dec) {
+        this.lastReasonsByCpaName.set(snap.cpaName, dec.reason);
+        if (dec.reason === 'extraction_window') {
+          nextExtractionAccounts.add(snap.accountId);
+          if (!this.activeExtractionAccounts.has(snap.accountId)) {
+            console.log(`[cpaWatermarkService] Entered extraction_window for ${sanitizeLog(snap.cpaName)} (W=${dec.targetWeight})`);
+          }
+        } else if (this.activeExtractionAccounts.has(snap.accountId)) {
+          console.log(`[cpaWatermarkService] Exited extraction_window for ${sanitizeLog(snap.cpaName)} (reason=${dec.reason})`);
+        }
+      }
+    }
+    this.activeExtractionAccounts = nextExtractionAccounts;
+
     // Translate computation targets to WeightPlan[] for UI / telemetry compatibility
     const plans = this.buildWeightPlans(snapshots, computation, currentNow);
     this.lastPlansList = plans;
@@ -511,6 +537,30 @@ export class CpaWatermarkService {
           : 'claude'
       ) as 'antigravity' | 'claude' | 'codex' | 'deepseek';
 
+      let weeklyRemainingPct: number | null = null;
+      let weeklyResetsAtMs: number | null = null;
+      let sessionRemainingPct: number | null = null;
+      if (snapshot?.buckets) {
+        const weeklyBucket = snapshot.buckets.find((b) => b.windowType === 'weekly_7d');
+        if (weeklyBucket) {
+          weeklyRemainingPct =
+            weeklyBucket.remainingPercent ??
+            (weeklyBucket.utilizationPercent != null ? 100 - weeklyBucket.utilizationPercent : null);
+          if (weeklyBucket.resetsAt) {
+            const parsedMs = new Date(weeklyBucket.resetsAt).getTime();
+            if (Number.isFinite(parsedMs)) {
+              weeklyResetsAtMs = parsedMs;
+            }
+          }
+        }
+        const sessionBucket = snapshot.buckets.find((b) => b.windowType === 'session_5h');
+        if (sessionBucket) {
+          sessionRemainingPct =
+            sessionBucket.remainingPercent ??
+            (sessionBucket.utilizationPercent != null ? 100 - sessionBucket.utilizationPercent : null);
+        }
+      }
+
       snapshots.push({
         cpaName: link.cpaName,
         accountId: link.accountId,
@@ -523,6 +573,9 @@ export class CpaWatermarkService {
         isCooldown,
         currentWeight: currentEntryWeight,
         managed: managedForRun,
+        weeklyRemainingPct,
+        weeklyResetsAtMs,
+        sessionRemainingPct,
       });
 
       if (currentEntryWeight !== null) {
@@ -1188,7 +1241,10 @@ export class CpaWatermarkService {
       }
 
       const currentWeight = typeof entry?.weight === 'number' ? entry.weight : (routing.applied ?? 0);
-      let targetWeight = evalResult?.targetWeight ?? 100;
+      let targetWeight =
+        engineAccount && evalResult?.reason !== 'circuit_breaker_429'
+          ? engineAccount.targetWeight
+          : (evalResult?.targetWeight ?? 100);
       let isDisabled = Boolean(entry?.disabled);
 
       if (effectiveState === 'quarantined' || effectiveState === 'airgapped') {
@@ -1226,6 +1282,10 @@ export class CpaWatermarkService {
       const errs15m = circuitBreakers.getErrors15m(link.accountId, currentNow);
       const readBackDrift = routing.applied != null && currentWeight !== routing.applied;
 
+      const engineReason = this.lastReasonsByCpaName.get(link.cpaName);
+      const extractionActive =
+        this.activeExtractionAccounts.has(link.accountId) || engineReason === 'extraction_window';
+
       const view: WatermarkAccountView = {
         accountId: link.accountId,
         name: account.name,
@@ -1246,6 +1306,8 @@ export class CpaWatermarkService {
         recentErrors15m: errs15m,
         tier: classification.tier,
         managed: classification.managed && routing.managed !== false,
+        reason: engineReason ?? evalResult?.reason,
+        extractionActive,
       };
 
       accountViews.push(view);

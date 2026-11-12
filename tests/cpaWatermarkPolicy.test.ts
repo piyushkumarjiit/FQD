@@ -756,6 +756,13 @@ async function run() {
         hardStopRecoveryPct: 7,
         fallbackMinDwellSec: 350,
         recoveryDwellSec: 450,
+        rotationStrategy: 'balanced',
+        urgencyFloorPct: 23,
+        terminalFloorPct: 5,
+        extractionWindowHours: 24,
+        minStandbyWeight: 10,
+        weightSteps: [10, 25, 50, 75, 100],
+        weightMinDwellSec: 600,
       },
       nonPro: {
         drainPct: 42,
@@ -1024,6 +1031,47 @@ async function run() {
     pass('loadState() strictly validates EngineState and policy_json shapes and returns null/undefined on corruption');
   } catch (err) {
     fail('loadState() strictly validates EngineState and policy_json shapes and returns null/undefined on corruption', err);
+  }
+
+  // --------------------------------------------------------------------------
+  // 8. Burn-Urgency Policy Validation
+  // --------------------------------------------------------------------------
+  try {
+    const defPolicy = validateWatermarkPolicy({});
+    assert(defPolicy.ok, 'Default policy validates cleanly');
+    if (defPolicy.ok) {
+      assertEquals(defPolicy.policy.pro.rotationStrategy, 'balanced', 'Default rotationStrategy is balanced');
+      assertEquals(defPolicy.policy.pro.urgencyFloorPct, 21, 'Default urgencyFloorPct is 21');
+      assertEquals(defPolicy.policy.pro.terminalFloorPct, 3, 'Default terminalFloorPct is hardStopPct + 1 (3)');
+    }
+
+    const liveHardStopDefault = validateWatermarkPolicy({
+      pro: { hard_stop_pct: 5, drain_pct: 20, drain_recovery_pct: 24, hard_stop_recovery_pct: 8, rotation_strategy: 'burn_urgency' },
+    });
+    assert(liveHardStopDefault.ok, 'Live hard_stop_pct=5 with omitted terminalFloorPct defaults cleanly');
+    if (liveHardStopDefault.ok) {
+      assertEquals(liveHardStopDefault.policy.pro.rotationStrategy, 'burn_urgency', 'snake_case rotation_strategy parsed');
+      assertEquals(liveHardStopDefault.policy.pro.terminalFloorPct, 6, 'Omitted terminalFloorPct defaults to proHardStopPct + 1 (6)');
+    }
+
+    const badStrategy = validateWatermarkPolicy({ pro: { rotationStrategy: 'invalid_strat' } });
+    assert(!badStrategy.ok, 'Invalid rotationStrategy rejected');
+
+    const badTerminal = validateWatermarkPolicy({ pro: { hardStopPct: 5, terminalFloorPct: 5 } });
+    assert(!badTerminal.ok, 'terminalFloorPct <= hardStopPct rejected');
+
+    const badUrgencyFloor = validateWatermarkPolicy({ pro: { drainPct: 20, urgencyFloorPct: 20 } });
+    assert(!badUrgencyFloor.ok, 'urgencyFloorPct <= drainPct rejected');
+
+    const badWindow = validateWatermarkPolicy({ pro: { extractionWindowHours: 200 } });
+    assert(!badWindow.ok, 'extractionWindowHours > 168 rejected');
+
+    const badSteps = validateWatermarkPolicy({ pro: { weightSteps: [50, 25] } });
+    assert(!badSteps.ok, 'Non-ascending weightSteps rejected');
+
+    pass('Burn-urgency policy fields parse, default, and validate strictly');
+  } catch (err) {
+    fail('Burn-urgency policy fields parse, default, and validate strictly', err);
   }
 
   // --------------------------------------------------------------------------

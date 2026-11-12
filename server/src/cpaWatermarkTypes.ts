@@ -94,6 +94,10 @@ export interface WatermarkAccountView {
   tier?: 'pro' | 'non_pro';
   /** Whether the routing policy manages this account's weight. */
   managed?: boolean;
+  /** Engine decision reason (e.g. 'extraction_window', 'healthy', 'drain'). */
+  reason?: string;
+  /** True when the account is burning down below tightPct inside the final extraction window. */
+  extractionActive?: boolean;
 }
 
 export interface WatermarkShadowDecision {

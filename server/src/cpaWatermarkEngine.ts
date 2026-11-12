@@ -11,6 +11,13 @@ export interface WatermarkPolicyConfig {
     hardStopRecoveryPct?: number;
     fallbackMinDwellSec?: number; // default 600 (10 mins)
     recoveryDwellSec?: number; // default 600 (10 mins)
+    rotationStrategy?: 'balanced' | 'burn_urgency';
+    urgencyFloorPct?: number;
+    terminalFloorPct?: number;
+    extractionWindowHours?: number;
+    minStandbyWeight?: number;
+    weightSteps?: number[];
+    weightMinDwellSec?: number;
   };
   nonPro?: {
     drainPct?: number; // default: DEFAULT_WATERMARK_POLICY.nonPro
@@ -32,6 +39,9 @@ export interface WatermarkSnapshot {
   isCooldown: boolean;
   currentWeight: number | null;
   managed: boolean;
+  weeklyRemainingPct?: number | null;
+  weeklyResetsAtMs?: number | null;
+  sessionRemainingPct?: number | null;
 }
 
 export type AccountEngineStateKind =
@@ -46,6 +56,7 @@ export interface AccountEngineState {
   state: AccountEngineStateKind;
   enteredAt: number;
   targetWeight: number;
+  weightChangedAt?: number;
 }
 
 export interface EngineState {
@@ -156,6 +167,177 @@ export function evalDrain(
     : quotaProj <= drainPct;
 }
 
+const STALE_TELEMETRY_SEC = 300;
+const MS_PER_HOUR = 3_600_000;
+
+/**
+ * Checks whether weekly quota telemetry is present, fresh, and has a future reset timestamp.
+ */
+function isValidWeeklyTelemetry(snap: WatermarkSnapshot, now: number): boolean {
+  return (
+    snap.stalenessSec <= STALE_TELEMETRY_SEC &&
+    typeof snap.weeklyRemainingPct === 'number' &&
+    Number.isFinite(snap.weeklyRemainingPct) &&
+    typeof snap.weeklyResetsAtMs === 'number' &&
+    Number.isFinite(snap.weeklyResetsAtMs) &&
+    snap.weeklyResetsAtMs > now
+  );
+}
+
+/**
+ * Computes the time-decaying weekly floor percentage: nominalFloor above windowHours,
+ * decaying linearly to terminalFloor during the final windowHours before reset.
+ */
+export function computeDynamicFloor(
+  hoursToReset: number,
+  nominalFloor: number,
+  terminalFloor: number,
+  windowHours: number
+): number {
+  if (hoursToReset > windowHours) {
+    return nominalFloor;
+  }
+  const progress = clamp(hoursToReset / windowHours, 0, 1);
+  return terminalFloor + (nominalFloor - terminalFloor) * progress;
+}
+
+/**
+ * Evaluates all six guards for bypassing Pro drain during the final extraction window.
+ */
+function isExtractionWindowActive(
+  snap: WatermarkSnapshot,
+  quotaEff: number,
+  proCfg: typeof PRO_DEFAULTS,
+  now: number
+): boolean {
+  if (proCfg.rotationStrategy !== 'burn_urgency') return false;
+  if (!isValidWeeklyTelemetry(snap, now)) return false;
+
+  const hoursToReset = (snap.weeklyResetsAtMs! - now) / MS_PER_HOUR;
+  if (hoursToReset <= 0 || hoursToReset > proCfg.extractionWindowHours) return false;
+
+  if (typeof snap.sessionRemainingPct === 'number') {
+    if (snap.weeklyRemainingPct! > snap.sessionRemainingPct) return false;
+    if (snap.sessionRemainingPct <= proCfg.drainPct) return false;
+  }
+
+  return quotaEff > proCfg.terminalFloorPct;
+}
+
+/**
+ * Rounds an urgency weight to the nearest configured step, keeping 100 exact.
+ */
+function quantizeWeight(rawWeight: number, steps: number[]): number {
+  if (rawWeight >= 100) return 100;
+  if (steps.length === 0) return clamp(Math.round(rawWeight), 2, 100);
+  let best = steps[0];
+  let bestDist = Math.abs(rawWeight - best);
+  for (let i = 1; i < steps.length; i++) {
+    const dist = Math.abs(rawWeight - steps[i]);
+    if (dist < bestDist) {
+      best = steps[i];
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/**
+ * Computes burn-urgency weights for all Pro accounts that would receive W > 0 in the assignment loop.
+ * Accounts with invalid weekly telemetry receive neutral W=100; U=0 parks at W=1.
+ */
+function computePoolUrgencyWeights(
+  proSnaps: WatermarkSnapshot[],
+  proAccountEval: Map<string, { initialState: AccountEngineStateKind; isStale: boolean }>,
+  proCfg: typeof PRO_DEFAULTS,
+  nextTierState: 'normal' | 'collective_fallback' | 'fail_static',
+  prevState: EngineState | undefined,
+  now: number
+): Map<string, number> {
+  const result = new Map<string, number>();
+  const urgencies = new Map<string, number | null>();
+  const eligibleNames: string[] = [];
+  let maxUrgency = 0;
+
+  for (const snap of proSnaps) {
+    if (!snap.managed) continue;
+    const ev = proAccountEval.get(snap.cpaName);
+    if (!ev) continue;
+    if (ev.initialState === 'cooldown' || ev.initialState === 'hard_stop' || ev.initialState === 'unknown') {
+      continue;
+    }
+
+    const getsPositiveWeight =
+      nextTierState === 'collective_fallback'
+        ? !(ev.isStale && ev.initialState === 'drain')
+        : ev.initialState === 'healthy';
+
+    if (!getsPositiveWeight) continue;
+
+    eligibleNames.push(snap.cpaName);
+    if (!isValidWeeklyTelemetry(snap, now)) {
+      urgencies.set(snap.cpaName, null);
+      continue;
+    }
+
+    const hoursToReset = (snap.weeklyResetsAtMs! - now) / MS_PER_HOUR;
+    const floor = computeDynamicFloor(
+      hoursToReset,
+      proCfg.urgencyFloorPct,
+      proCfg.terminalFloorPct,
+      proCfg.extractionWindowHours
+    );
+    const weeklyHeadroom = snap.weeklyRemainingPct! - floor;
+    const cappedHeadroom =
+      typeof snap.sessionRemainingPct === 'number'
+        ? Math.min(weeklyHeadroom, snap.sessionRemainingPct - proCfg.drainPct)
+        : weeklyHeadroom;
+    const usable = Math.max(0, cappedHeadroom);
+    const urgency = usable / Math.max(1, hoursToReset);
+    urgencies.set(snap.cpaName, urgency);
+    if (urgency > maxUrgency) {
+      maxUrgency = urgency;
+    }
+  }
+
+  for (const cpaName of eligibleNames) {
+    const u = urgencies.get(cpaName);
+    let rawWeight: number;
+    if (u === null || u === undefined || maxUrgency <= 0) {
+      rawWeight = 100;
+    } else if (u <= 0) {
+      rawWeight = 1;
+    } else if (u === maxUrgency) {
+      rawWeight = 100;
+    } else {
+      const scaled = Math.max(proCfg.minStandbyWeight, (100 * u) / maxUrgency);
+      rawWeight = quantizeWeight(scaled, proCfg.weightSteps);
+    }
+
+    // Apply dwell only between steady-state healthy urgency weights (never delay drain W=1 or recovery)
+    const prev = prevState?.accountStates?.[cpaName];
+    const dwellMs = proCfg.weightMinDwellSec * 1000;
+    if (
+      dwellMs > 0 &&
+      prev &&
+      prev.state === 'healthy' &&
+      prev.targetWeight > 1 &&
+      rawWeight > 1 &&
+      rawWeight !== prev.targetWeight
+    ) {
+      const lastChangedAt = prev.weightChangedAt ?? prev.enteredAt;
+      if (now - lastChangedAt < dwellMs) {
+        result.set(cpaName, prev.targetWeight);
+        continue;
+      }
+    }
+
+    result.set(cpaName, rawWeight);
+  }
+
+  return result;
+}
+
 /**
  * Pure calculation engine for CPA watermark targeting (WP-1).
  *
@@ -202,6 +384,9 @@ export function computeWatermarkTargets(
   const burnRateMax = policy.burnRateMax ?? DEFAULT_BURN_RATE_MAX;
 
   const proCfg = { ...PRO_DEFAULTS, ...(policy.pro ?? {}) };
+  if (policy.pro?.terminalFloorPct === undefined && policy.pro?.hardStopPct !== undefined) {
+    proCfg.terminalFloorPct = Math.max(proCfg.terminalFloorPct, proCfg.hardStopPct + 1);
+  }
   const nonProCfg = { ...NON_PRO_DEFAULTS, ...(policy.nonPro ?? {}) };
 
   // Group snapshots by provider pool
@@ -359,6 +544,9 @@ export function computeWatermarkTargets(
             st = 'unknown';
             rsn = 'stale_telemetry_unknown';
           }
+        } else if (isExtractionWindowActive(snap, quotaEff, proCfg, now)) {
+          st = 'healthy';
+          rsn = 'extraction_window';
         } else {
           // Two-stage drain with hysteresis
           const wasInDrain = prev?.state === 'drain';
@@ -444,6 +632,11 @@ export function computeWatermarkTargets(
     }
     nextTierStates[tierKey] = nextTierState;
 
+    const urgencyWeights =
+      proCfg.rotationStrategy === 'burn_urgency'
+        ? computePoolUrgencyWeights(proSnaps, proAccountEval, proCfg, nextTierState, prevState, now)
+        : null;
+
     // Assign Pro targets based on tier state and account states
     let proEligibleCount = 0; // count of Pro accounts eligible (not in hard_stop, cooldown, unknown, unmanaged)
 
@@ -470,7 +663,7 @@ export function computeWatermarkTargets(
         // - Accounts in state 'unknown' (stale with no prior state) stay W=0
         // - Stale accounts holding drain (state 'drain', reason 'stale_telemetry_drain' or 'stale_telemetry_drain_hold')
         //   must hold W=1 and NOT be elevated to W=100
-        // - Only non-stale, non-hardstop, non-cooldown accounts participate in collective fallback elevation to W=100
+        // - Only non-stale, non-hardstop, non-cooldown accounts participate in collective fallback elevation
         if (ev.initialState === 'unknown') {
           targetWeight = 0;
           reason = ev.initialReason;
@@ -478,9 +671,14 @@ export function computeWatermarkTargets(
           targetWeight = 1;
           reason = ev.initialReason;
           proEligibleCount++;
+        } else if (proCfg.rotationStrategy === 'burn_urgency' && ev.initialState === 'drain') {
+          targetWeight = urgencyWeights?.get(snap.cpaName) ?? 1;
+          reason = ev.initialReason;
+          finalState = 'drain';
+          proEligibleCount++;
         } else {
-          targetWeight = 100;
-          reason = 'collective_fallback';
+          targetWeight = urgencyWeights?.get(snap.cpaName) ?? 100;
+          reason = ev.initialReason === 'extraction_window' ? 'extraction_window' : 'collective_fallback';
           finalState = 'healthy';
           proEligibleCount++;
         }
@@ -491,10 +689,10 @@ export function computeWatermarkTargets(
           reason = ev.initialReason;
           proEligibleCount++;
         } else if (ev.initialState === 'healthy') {
-          // Direct recovery: a healthy account serves at full weight.
-          targetWeight = 100;
+          // Direct recovery: a healthy account serves at full or urgency-weighted capacity.
+          targetWeight = urgencyWeights?.get(snap.cpaName) ?? 100;
           finalState = 'healthy';
-          reason = 'healthy';
+          reason = ev.initialReason === 'extraction_window' ? 'extraction_window' : 'healthy';
           proEligibleCount++;
         } else if (ev.initialState === 'unknown') {
           targetWeight = 0;
@@ -503,16 +701,24 @@ export function computeWatermarkTargets(
       }
 
       targets.set(snap.cpaName, { targetWeight, reason, isEmergency });
+      const prevAcc = prevState?.accountStates?.[snap.cpaName];
       const enteredAt =
-        prevState?.accountStates?.[snap.cpaName]?.state === finalState
-          ? prevState?.accountStates?.[snap.cpaName]?.enteredAt ?? now
+        prevAcc?.state === finalState
+          ? prevAcc?.enteredAt ?? now
           : now;
 
-      nextAccountStates[snap.cpaName] = {
+      const nextAccountState: AccountEngineState = {
         state: finalState,
         enteredAt,
         targetWeight,
       };
+      if (proCfg.rotationStrategy === 'burn_urgency') {
+        nextAccountState.weightChangedAt =
+          prevAcc && prevAcc.targetWeight === targetWeight
+            ? prevAcc.weightChangedAt ?? prevAcc.enteredAt
+            : now;
+      }
+      nextAccountStates[snap.cpaName] = nextAccountState;
     }
 
     // ----------------------------------------------------

@@ -125,6 +125,7 @@ if (cpaConfig) {
     watermarkStore: store.watermarkStore,
     tracker,
   });
+  tracker.setSuppressTightAlert((accountId) => cpaWatermarkService?.isExtractionActive(accountId) ?? false);
   cpaRouting = cpaWatermarkService;
   cpaWatermarkService.migrateRoutingProvenance();
 
