@@ -870,6 +870,221 @@ console.log('\nSuite 14: Staleness Precedence in Fallback & Modality Bypass & Mo
   );
 }
 
+// ============================================================================
+// Suite 12: Burn-Urgency Proportion Routing (Spec v2)
+// ============================================================================
+{
+  console.log('\nSuite 12: Burn-Urgency Proportion Routing');
+  const now = 1_700_000_000_000;
+  const HOUR = 3_600_000;
+  const urgencyPolicy: WatermarkPolicyConfig = {
+    mode: 'enforce',
+    pro: {
+      drainPct: 20,
+      drainRecoveryPct: 24,
+      hardStopPct: 5,
+      hardStopRecoveryPct: 8,
+      rotationStrategy: 'burn_urgency',
+      urgencyFloorPct: 21,
+      terminalFloorPct: 6,
+      extractionWindowHours: 24,
+      minStandbyWeight: 10,
+      weightSteps: [10, 25, 50, 75, 100],
+      weightMinDwellSec: 600,
+    },
+  };
+
+  // 1. S1: Mid-week preservation (A near 21% floor, B has headroom)
+  const s1Snaps = [
+    makeProSnapshot('a', 22, {
+      provider: 'claude',
+      weeklyRemainingPct: 22,
+      weeklyResetsAtMs: now + 48 * HOUR,
+      sessionRemainingPct: 60,
+    }),
+    makeProSnapshot('b', 80, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 120 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const s1Res = computeWatermarkTargets(s1Snaps, urgencyPolicy, undefined, now);
+  assert(s1Res.targets.get('b')?.targetWeight === 100, 'S1: Account B with higher urgency gets W=100');
+  assert(s1Res.targets.get('a')?.targetWeight === 10, 'S1: Account A near floor gets W=10');
+
+  // 2. S1 parked at 21% -> U=0 -> W=1
+  const s1ParkedSnaps = [
+    makeProSnapshot('a', 21, {
+      provider: 'claude',
+      weeklyRemainingPct: 21,
+      weeklyResetsAtMs: now + 48 * HOUR,
+      sessionRemainingPct: 60,
+    }),
+    makeProSnapshot('b', 80, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 120 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const s1Parked = computeWatermarkTargets(s1ParkedSnaps, urgencyPolicy, undefined, now);
+  assert(s1Parked.targets.get('a')?.targetWeight === 1, 'S1: Account at 21% floor parks at W=1');
+  assert(s1Parked.nextState.accountStates['a']?.state === 'healthy', 'S1: Parked account stays healthy');
+
+  // 3. S2: Final 24h extraction bypass (below 20% drainPct stays healthy and burns toward 6%)
+  const s2Snaps = [
+    makeProSnapshot('a', 15, {
+      provider: 'claude',
+      weeklyRemainingPct: 15,
+      weeklyResetsAtMs: now + 12 * HOUR, // floor = 6 + 15*0.5 = 13.5, usable = 1.5, U = 0.125
+      sessionRemainingPct: 70,
+    }),
+    makeProSnapshot('b', 75, {
+      provider: 'claude',
+      weeklyRemainingPct: 75,
+      weeklyResetsAtMs: now + 160 * HOUR, // floor = 21, usable = 54, U = 0.3375
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const s2Res = computeWatermarkTargets(s2Snaps, urgencyPolicy, undefined, now);
+  assert(s2Res.nextState.accountStates['a']?.state === 'healthy', 'S2: Extraction bypass keeps A healthy at 15%');
+  assert(s2Res.targets.get('a')?.reason === 'extraction_window', 'S2: Reason is extraction_window');
+
+  // 4. Guard failures disable extraction bypass (session low <= 20%, session binding, hardStop <= 5%)
+  const guardSessionLow = [
+    makeProSnapshot('a', 15, {
+      provider: 'claude',
+      weeklyRemainingPct: 18,
+      weeklyResetsAtMs: now + 12 * HOUR,
+      sessionRemainingPct: 15, // session binding & <= drainPct
+    }),
+    makeProSnapshot('b', 75, {
+      provider: 'claude',
+      weeklyRemainingPct: 75,
+      weeklyResetsAtMs: now + 160 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const guardRes = computeWatermarkTargets(guardSessionLow, urgencyPolicy, undefined, now);
+  assert(guardRes.nextState.accountStates['a']?.state === 'drain', 'Guard: Low session falls back to drain');
+  assert(guardRes.targets.get('a')?.targetWeight === 1, 'Guard: Drained account gets W=1 even in N=2 fallback (Option a)');
+  assert(guardRes.targets.get('b')?.targetWeight === 100, 'Guard: Healthy peer keeps W=100 in N=2 fallback');
+
+  const hardStopInWindow = [
+    makeProSnapshot('a', 5, {
+      provider: 'claude',
+      weeklyRemainingPct: 5,
+      weeklyResetsAtMs: now + 6 * HOUR,
+      sessionRemainingPct: 70,
+    }),
+    makeProSnapshot('b', 75, {
+      provider: 'claude',
+      weeklyRemainingPct: 75,
+      weeklyResetsAtMs: now + 160 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const hsRes = computeWatermarkTargets(hardStopInWindow, urgencyPolicy, undefined, now);
+  assert(hsRes.nextState.accountStates['a']?.state === 'hard_stop', 'Hard stop still fires at 5% inside extraction window');
+  assert(hsRes.targets.get('a')?.targetWeight === 0, 'Hard stop sets W=0 inside extraction window');
+
+  // 5. Neutral accounts (missing, stale, or past reset) get W=100 and are excluded from Umax
+  const neutralSnaps = [
+    makeProSnapshot('ag', 80, { provider: 'claude', weeklyRemainingPct: null, weeklyResetsAtMs: null }),
+    makeProSnapshot('past', 80, { provider: 'claude', weeklyRemainingPct: 80, weeklyResetsAtMs: now - 1000 }),
+    makeProSnapshot('valid-fast', 80, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 24 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+    makeProSnapshot('valid-slow', 80, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 120 * HOUR,
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const neutralRes = computeWatermarkTargets(neutralSnaps, urgencyPolicy, undefined, now);
+  assert(neutralRes.targets.get('ag')?.targetWeight === 100, 'Missing weekly telemetry gets neutral W=100');
+  assert(neutralRes.targets.get('past')?.targetWeight === 100, 'Past resetsAt gets neutral W=100');
+  assert(neutralRes.targets.get('valid-fast')?.targetWeight === 100, 'Valid fast-reset account still gets W=100');
+  assert(neutralRes.targets.get('valid-slow')?.targetWeight === 25, 'Valid slow-reset account quantized to W=25');
+
+  // 6. Session cap reduces usable quota
+  const sessionCapSnaps = [
+    makeProSnapshot('a', 30, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 24 * HOUR, // weeklyHeadroom = 59
+      sessionRemainingPct: 30, // sessionHeadroom = 30 - 20 = 10 -> usable=10, U=10/24=0.4167
+    }),
+    makeProSnapshot('b', 80, {
+      provider: 'claude',
+      weeklyRemainingPct: 80,
+      weeklyResetsAtMs: now + 60 * HOUR, // weeklyHeadroom = 59, sessionHeadroom = 70 -> usable=59, U=0.983
+      sessionRemainingPct: 90,
+    }),
+  ];
+  const capRes = computeWatermarkTargets(sessionCapSnaps, urgencyPolicy, undefined, now);
+  assert(capRes.targets.get('b')?.targetWeight === 100, 'Session cap: B becomes lead (W=100)');
+  assert(capRes.targets.get('a')?.targetWeight === 50, 'Session cap: A scaled down by session headroom (W=50)');
+
+  // 7. Churn & Dwell: steady-state weight changes held for 10m; emergency drain/hard_stop bypasses dwell
+  let churnState: EngineState | undefined = undefined;
+  let weightWrites = 0;
+  for (let step = 0; step < 24 * 60; step++) {
+    const t = now + step * 60_000;
+    const wRemA = Math.max(25, 85 - step * 0.04);
+    const stepSnaps = [
+      makeProSnapshot('a', wRemA, {
+        provider: 'claude',
+        weeklyRemainingPct: wRemA,
+        weeklyResetsAtMs: now + 72 * HOUR,
+        sessionRemainingPct: 90,
+        currentWeight: churnState?.accountStates['a']?.targetWeight ?? 100,
+      }),
+      makeProSnapshot('b', 80, {
+        provider: 'claude',
+        weeklyRemainingPct: 80,
+        weeklyResetsAtMs: now + 96 * HOUR,
+        sessionRemainingPct: 90,
+        currentWeight: churnState?.accountStates['b']?.targetWeight ?? 100,
+      }),
+    ];
+    const r = computeWatermarkTargets(stepSnaps, urgencyPolicy, churnState, t);
+    weightWrites += r.writeBatch.length;
+    churnState = r.nextState;
+  }
+  assert(weightWrites <= 144, `24h churn stays bounded (writes=${weightWrites} <= 144)`);
+
+  // Emergency drain bypasses dwell immediately
+  const dwellStart = computeWatermarkTargets(s1Snaps, urgencyPolicy, undefined, now);
+  const emergencyNext = computeWatermarkTargets(
+    [
+      makeProSnapshot('a', 18, {
+        provider: 'claude',
+        weeklyRemainingPct: 18,
+        weeklyResetsAtMs: now + 48 * HOUR,
+        sessionRemainingPct: 60,
+        currentWeight: 10,
+      }),
+      makeProSnapshot('b', 80, {
+        provider: 'claude',
+        weeklyRemainingPct: 80,
+        weeklyResetsAtMs: now + 120 * HOUR,
+        sessionRemainingPct: 90,
+        currentWeight: 100,
+      }),
+    ],
+    urgencyPolicy,
+    dwellStart.nextState,
+    now + 60_000
+  );
+  assert(emergencyNext.targets.get('a')?.targetWeight === 1, 'Drain W=1 bypasses 10m dwell immediately');
+}
+
 console.log('\n========================================');
 console.log(`SUMMARY: Total: ${totalTests} | Passed: ${passedTests} | Failed: ${failedTests}`);
 console.log('========================================\n');

@@ -44,9 +44,14 @@ export class Tracker {
 
   /** Tight / exhausted levels for an account; wired to the active policy at startup. */
   private statusLevelsFor: (accountId: string) => StatusLevels = () => DEFAULT_STATUS_LEVELS.pro;
+  private shouldSuppressTightAlert: (accountId: string) => boolean = () => false;
 
   setStatusLevels(fn: (accountId: string) => StatusLevels): void {
     this.statusLevelsFor = fn;
+  }
+
+  setSuppressTightAlert(fn: (accountId: string) => boolean): void {
+    this.shouldSuppressTightAlert = fn;
   }
 
   onSyncAll(cb: () => void | Promise<void>): void {
@@ -377,7 +382,9 @@ export class Tracker {
       next.armed10 = false;
     } else next.armed10 = true;
     if (remaining <= levels.tightPct) {
-      if (remaining > levels.exhaustedPct && st.armed20) await this.alert(account, 'low20', `Low limit: ${account.name}`, `${b.label}: ${left}% remaining (policy drain level ${levels.tightPct}%).`);
+      if (remaining > levels.exhaustedPct && st.armed20 && !this.shouldSuppressTightAlert(account.id)) {
+        await this.alert(account, 'low20', `Low limit: ${account.name}`, `${b.label}: ${left}% remaining (policy drain level ${levels.tightPct}%).`);
+      }
       next.armed20 = false;
     } else next.armed20 = true;
 

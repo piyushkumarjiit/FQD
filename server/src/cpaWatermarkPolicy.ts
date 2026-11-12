@@ -43,6 +43,13 @@ export interface FullWatermarkPolicy extends WatermarkPolicyConfig {
     hardStopRecoveryPct: number;
     fallbackMinDwellSec: number;
     recoveryDwellSec: number;
+    rotationStrategy: 'balanced' | 'burn_urgency';
+    urgencyFloorPct: number;
+    terminalFloorPct: number;
+    extractionWindowHours: number;
+    minStandbyWeight: number;
+    weightSteps: number[];
+    weightMinDwellSec: number;
   };
   nonPro: {
     drainPct: number;
@@ -78,6 +85,13 @@ export const DEFAULT_WATERMARK_POLICY: FullWatermarkPolicy = {
     hardStopRecoveryPct: 5,
     fallbackMinDwellSec: 600,
     recoveryDwellSec: 600,
+    rotationStrategy: 'balanced',
+    urgencyFloorPct: 21,
+    terminalFloorPct: DEFAULT_STATUS_LEVELS.pro.exhaustedPct + 1,
+    extractionWindowHours: 24,
+    minStandbyWeight: 10,
+    weightSteps: [10, 25, 50, 75, 100],
+    weightMinDwellSec: 600,
   },
   nonPro: {
     drainPct: DEFAULT_STATUS_LEVELS.nonPro.tightPct,
@@ -360,6 +374,76 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
     console.warn(`[cpaWatermarkPolicy] ${warnMsg}`);
   }
 
+  // Burn-urgency routing options (pro)
+  const rawRotationStrategy =
+    getProp(proObj, 'rotationStrategy', 'rotation_strategy') ??
+    getProp(raw, 'rotationStrategy', 'rotation_strategy') ??
+    DEFAULT_WATERMARK_POLICY.pro.rotationStrategy;
+  if (rawRotationStrategy !== 'balanced' && rawRotationStrategy !== 'burn_urgency') {
+    errors.push(
+      `Invalid rotationStrategy '${String(rawRotationStrategy)}': must be 'balanced' or 'burn_urgency'`
+    );
+  }
+  const rotationStrategy = (
+    rawRotationStrategy === 'burn_urgency' ? 'burn_urgency' : 'balanced'
+  ) as 'balanced' | 'burn_urgency';
+
+  const urgencyFloorPct = readNumber(
+    'urgencyFloorPct',
+    'urgency_floor_pct',
+    Math.min(100, Math.max(DEFAULT_WATERMARK_POLICY.pro.urgencyFloorPct, proDrainPct + 1)),
+    proObj
+  );
+  const terminalFloorPct = readNumber(
+    'terminalFloorPct',
+    'terminal_floor_pct',
+    proHardStopPct + 1,
+    proObj
+  );
+  const extractionWindowHours = readNumber(
+    'extractionWindowHours',
+    'extraction_window_hours',
+    DEFAULT_WATERMARK_POLICY.pro.extractionWindowHours,
+    proObj
+  );
+  const minStandbyWeight = readNumber(
+    'minStandbyWeight',
+    'min_standby_weight',
+    DEFAULT_WATERMARK_POLICY.pro.minStandbyWeight,
+    proObj
+  );
+  const weightMinDwellSec = readNumber(
+    'weightMinDwellSec',
+    'weight_min_dwell_sec',
+    DEFAULT_WATERMARK_POLICY.pro.weightMinDwellSec,
+    proObj
+  );
+
+  const rawWeightSteps =
+    getProp(proObj, 'weightSteps', 'weight_steps') ??
+    getProp(raw, 'weightSteps', 'weight_steps');
+  let weightSteps: number[] = [...DEFAULT_WATERMARK_POLICY.pro.weightSteps];
+  if (rawWeightSteps !== undefined && rawWeightSteps !== null) {
+    if (!Array.isArray(rawWeightSteps) || rawWeightSteps.length === 0) {
+      errors.push("Property 'weightSteps' must be a non-empty array of ascending integers in [2, 100]");
+    } else {
+      const parsedSteps: number[] = [];
+      for (let i = 0; i < rawWeightSteps.length; i++) {
+        const s = rawWeightSteps[i];
+        if (typeof s !== 'number' || !Number.isInteger(s) || s < 2 || s > 100) {
+          errors.push(`Property 'weightSteps[${i}]' must be an integer in [2, 100], got ${String(s)}`);
+        } else if (i > 0 && s <= rawWeightSteps[i - 1]) {
+          errors.push(`Property 'weightSteps' must be strictly ascending (index ${i}: ${s} <= ${rawWeightSteps[i - 1]})`);
+        } else {
+          parsedSteps.push(s);
+        }
+      }
+      if (parsedSteps.length === rawWeightSteps.length) {
+        weightSteps = parsedSteps;
+      }
+    }
+  }
+
   // 2. Percentage bounds [0, 100]
   const pctValues: [string, number][] = [
     ['proDrainPct', proDrainPct],
@@ -394,6 +478,31 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
   if (proHardStopRecoveryPct >= proDrainPct) {
     errors.push(
       `proHardStopRecoveryPct (${proHardStopRecoveryPct}) must be strictly less than proDrainPct (${proDrainPct})`
+    );
+  }
+  if (urgencyFloorPct <= proDrainPct || urgencyFloorPct > 100) {
+    errors.push(
+      `urgencyFloorPct (${urgencyFloorPct}) must be > proDrainPct (${proDrainPct}) and <= 100`
+    );
+  }
+  if (terminalFloorPct <= proHardStopPct || terminalFloorPct >= urgencyFloorPct) {
+    errors.push(
+      `terminalFloorPct (${terminalFloorPct}) must satisfy proHardStopPct (${proHardStopPct}) < terminalFloorPct < urgencyFloorPct (${urgencyFloorPct})`
+    );
+  }
+  if (extractionWindowHours <= 0 || extractionWindowHours > 168) {
+    errors.push(
+      `extractionWindowHours (${extractionWindowHours}) must be > 0 and <= 168`
+    );
+  }
+  if (!Number.isInteger(minStandbyWeight) || minStandbyWeight < 2 || minStandbyWeight > 100) {
+    errors.push(
+      `minStandbyWeight (${minStandbyWeight}) must be an integer in [2, 100]`
+    );
+  }
+  if (weightMinDwellSec < 0) {
+    errors.push(
+      `weightMinDwellSec (${weightMinDwellSec}) must be >= 0`
     );
   }
 
@@ -531,6 +640,13 @@ export function validateWatermarkPolicy(raw: unknown): PolicyValidationResult {
         hardStopRecoveryPct: proHardStopRecoveryPct,
         fallbackMinDwellSec,
         recoveryDwellSec,
+        rotationStrategy,
+        urgencyFloorPct,
+        terminalFloorPct,
+        extractionWindowHours,
+        minStandbyWeight,
+        weightSteps,
+        weightMinDwellSec,
       },
       nonPro: {
         drainPct: nonProDrainPct,
