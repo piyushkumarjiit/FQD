@@ -671,6 +671,11 @@ export function computeWatermarkTargets(
           targetWeight = 1;
           reason = ev.initialReason;
           proEligibleCount++;
+        } else if (proCfg.rotationStrategy === 'burn_urgency' && ev.initialState === 'drain') {
+          targetWeight = urgencyWeights?.get(snap.cpaName) ?? 1;
+          reason = ev.initialReason;
+          finalState = 'drain';
+          proEligibleCount++;
         } else {
           targetWeight = urgencyWeights?.get(snap.cpaName) ?? 100;
           reason = ev.initialReason === 'extraction_window' ? 'extraction_window' : 'collective_fallback';
