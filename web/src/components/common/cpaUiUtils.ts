@@ -168,22 +168,44 @@ export function deriveRoutingEnforcement(
 
 /* ---------------- 4. Account Status ---------------- */
 
-export type AccountStatus = 'cooldown' | 'exhausted' | 'healthy' | 'tight';
-
+export type AccountStatus = 'cooldown' | 'exhausted' | 'healthy' | 'tos';
 
 export const ACCOUNT_STATUS_LABEL: Record<AccountStatus, string> = {
   cooldown: 'Cooldown',
   exhausted: 'Exhausted',
   healthy: 'Healthy',
-  tight: 'Tight',
+  tos: 'TOS',
 };
 
 export const ACCOUNT_STATUS_BADGE: Record<AccountStatus, string> = {
   cooldown: 'badge-cool',
   exhausted: 'badge-bad',
   healthy: 'badge-ok',
-  tight: 'badge-warn',
+  tos: 'badge-tos',
 };
+
+export function isTosAccount(account: Account, accountView?: WatermarkAccountView | null): boolean {
+  const err = (account.latestSnapshot?.errorMessage || account.lastError || '').toLowerCase();
+  const vReason = (accountView?.reason || '').toLowerCase();
+  const name = account.name.toLowerCase();
+  if (
+    err.includes('tos') ||
+    err.includes('terms of service') ||
+    (err.includes('403') && (err.includes('restriction') || err.includes('violation') || err.includes('appeal')))
+  ) {
+    return true;
+  }
+  if (vReason.includes('tos') || name.includes('tos')) {
+    return true;
+  }
+  if (
+    account.latestSnapshot?.status === 'quarantined' &&
+    (err.includes('403') || err.includes('violation') || err.includes('tos') || err.includes('terms'))
+  ) {
+    return true;
+  }
+  return false;
+}
 
 /** The 5-hour and weekly windows of an account, each null when the provider does not report it. */
 export function quotaWindows(account: Account): { fiveHour: RingWindow | null; weekly: RingWindow | null; binding: RingWindow | null } {
@@ -198,15 +220,20 @@ export function quotaWindows(account: Account): { fiveHour: RingWindow | null; w
 
 /**
  * The status shown for an account, one rule for every page.
+ * TOS: Google 403 Terms of Service restriction flagged.
  * Cooldown: FQD or an admin took the account out of the CLIProxy pool.
- * Exhausted / Tight: for CLIProxy accounts, the state the server reports from the routing
+ * Exhausted: for CLIProxy accounts, the state the server reports from the routing
  * policy; otherwise the tightest window against the policy levels for the account's tier.
+ * Healthy: normal operational pool member.
  */
 export function accountStatus(
   account: Account,
   accountView?: WatermarkAccountView | null,
   levels: TieredStatusLevels = DEFAULT_STATUS_LEVELS
 ): AccountStatus {
+  if (isTosAccount(account, accountView)) {
+    return 'tos';
+  }
   if (
     accountView &&
     (accountView.manualHold !== 'none' ||
@@ -219,12 +246,10 @@ export function accountStatus(
   if (account.latestSnapshot?.status === 'rate_limited') return 'exhausted';
   if (accountView) {
     if (accountView.state === 'exhausted') return 'exhausted';
-    if (accountView.state === 'tight' || accountView.state === 'draining') return 'tight';
     return 'healthy';
   }
   const lv = levelsForTier(levels, null);
   const binding = dualRingData(account.latestSnapshot).binding;
   if (binding && binding.remaining <= lv.exhaustedPct) return 'exhausted';
-  if (binding && binding.remaining <= lv.tightPct) return 'tight';
   return 'healthy';
 }
