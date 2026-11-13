@@ -194,7 +194,10 @@ export class Tracker {
       if (creds?.authType === 'cpa') {
         const link = this.store.getCpaLink(a.id);
         if (link && link.state === 'unlinked') return false;
-        if (creds.cpaStatus === 'disabled' && holdOwner(this.store, a.id) !== 'fqd') return false;
+        if (creds.cpaStatus === 'disabled') {
+          const owner = holdOwner(this.store, a.id);
+          if (owner !== 'fqd' && owner !== 'operator') return false;
+        }
       }
       return true;
     });
@@ -258,8 +261,11 @@ export class Tracker {
       if (link && link.state === 'unlinked') {
         return;
       }
-      if (creds.cpaStatus === 'disabled' && holdOwner(this.store, accountId) !== 'fqd') {
-        return;
+      if (creds.cpaStatus === 'disabled') {
+        const owner = holdOwner(this.store, accountId);
+        if (owner !== 'fqd' && owner !== 'operator') {
+          return;
+        }
       }
     }
 

@@ -61,6 +61,9 @@ export function reasonOf(data: PanelData, a: Account): string {
   const b = bindingOf(a);
   const lv = levelsOf(data, a);
   const back = b?.resetsAt ? ` Resets in ${untilText(b.resetsAt)}.` : '';
+  if (st === 'tos') {
+    return 'Google 403 TOS notice · Appeal submitted. Polling paused in cooldown to protect account.';
+  }
   if (st === 'cooldown') {
     const hold = viewOf(data, a.id)?.manualHold;
     return hold && hold !== 'none'
@@ -85,23 +88,6 @@ export function reasonOf(data: PanelData, a: Account): string {
       return `High request velocity: projected to reach the hard stop (${lv.exhaustedPct}%)${runway} (${b.label} at ${b.remaining}%). Callers routed here may get 429 errors.${back}`;
     }
     return `Stopped by routing policy to protect quota (${b.label} at ${b.remaining}%). Callers routed here may get 429 errors.${back}`;
-  }
-  if (st === 'tight') {
-    if (b.remaining <= lv.tightPct) {
-      return `${b.label} at ${b.remaining}%, at or below the policy drain level (${lv.tightPct}%).${back}`;
-    }
-    const v = viewOf(data, a.id);
-    const breached = v?.windows?.find((w) => w.currentRemainingPct <= lv.tightPct);
-    if (breached) {
-      const wBack = breached.resetsAt ? ` Resets in ${untilText(breached.resetsAt)}.` : '';
-      return `${breached.label} at ${Math.round(breached.currentRemainingPct)}%, at or below the policy drain level (${lv.tightPct}%).${wBack}`;
-    }
-    const proj = v?.windows?.find((w) => w.projectedRemainingPct <= lv.tightPct);
-    if (proj || (v?.burnRatePerMin ?? 0) > 0) {
-      const runway = v?.runwayMinutes ? ` in ~${v.runwayMinutes}m` : ' soon';
-      return `High request velocity: projected to reach the drain level (${lv.tightPct}%)${runway} (${b.label} at ${b.remaining}%).${back}`;
-    }
-    return `Draining traffic under routing policy (${b.label} at ${b.remaining}%).${back}`;
   }
   return `Lowest quota: ${b.label} at ${b.remaining}%.`;
 }
@@ -128,13 +114,13 @@ export const fmtSpend = (n: number): string => `$${n.toLocaleString(undefined, {
 
 export const STATUS_COLOR: Record<AccountStatus, string> = {
   healthy: 'var(--ok)',
-  tight: 'var(--warn)',
   exhausted: 'var(--bad)',
   cooldown: 'var(--cool)',
+  tos: 'var(--tos)',
 };
 
-export const Badge: React.FC<{ status: AccountStatus }> = ({ status }) => (
-  <span className={`badge b-${status}`}>{ACCOUNT_STATUS_LABEL[status]}</span>
+export const Badge: React.FC<{ status: AccountStatus | 'tight' }> = ({ status }) => (
+  <span className={`badge b-${status}`}>{status === 'tight' ? 'Tight' : ACCOUNT_STATUS_LABEL[status]}</span>
 );
 
 export const Dot: React.FC<{ color: string }> = ({ color }) => <span className="dot" style={{ background: color }} />;

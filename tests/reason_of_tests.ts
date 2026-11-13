@@ -98,60 +98,53 @@ function makePanelData(accounts: Account[], views: WatermarkAccountView[]): Pane
   };
 }
 
-// Suite 1: Standard tight when displayed window <= drain level (20%)
-console.log('Suite 1: Standard tight when displayed window <= drainPct');
+// Suite 1: Honest TOS appeal reasoning
+console.log('Suite 1: Honest TOS appeal reasoning');
 {
-  const acc = makeAccount('acc-1', 'slot-01', 13);
+  const acc = makeAccount('acc-tos-1', 'slot-01', 100);
+  acc.latestSnapshot!.status = 'quarantined';
+  acc.latestSnapshot!.errorMessage = 'Google 403 TOS notice · Appeal submitted';
   const view: WatermarkAccountView = {
-    accountId: 'acc-1',
+    accountId: 'acc-tos-1',
     name: 'slot-01',
     provider: 'antigravity',
-    state: 'tight',
+    state: 'quarantined',
     manualHold: 'none',
-    currentWeight: 1,
-    targetWeight: 1,
+    currentWeight: 0,
+    targetWeight: 0,
     readBackDrift: false,
-    isQuarantined: false,
-    isDisabled: false,
+    isQuarantined: true,
+    isDisabled: true,
     bindingWindow: 'weekly_7d',
-    windows: [
-      {
-        key: 'weekly_7d',
-        label: 'Gemini · Weekly',
-        currentRemainingPct: 13,
-        projectedRemainingPct: 13,
-        resetsAt: '2026-11-20T12:00:00Z',
-        resetSecondsRemaining: 3600,
-        isBinding: true,
-      },
-    ],
+    windows: [],
     burnRatePerMin: 0,
     runwayMinutes: null,
     recentRequests5m: 0,
     recentErrors15m: { http429: 0, http5xx: 0 },
+    reason: 'Google 403 TOS notice · Appeal submitted',
   };
 
   const data = makePanelData([acc], [view]);
   const reason = reasonOf(data, acc);
-  assert(reason.includes('Gemini · Weekly at 13%, at or below the policy drain level (20%)'), 'Mentions binding window at 13% at or below drain level');
+  assert(reason.includes('Google 403 TOS notice · Appeal submitted. Polling paused in cooldown to protect account.'), 'Outputs honest TOS appeal text');
 }
 
-// Suite 2: Tight when displayed window > 20% but secondary window <= 20%
-console.log('\nSuite 2: Multi-window tight (secondary window breached)');
+// Suite 2: Healthy account reasoning
+console.log('\nSuite 2: Healthy account reasoning');
 {
-  const acc = makeAccount('acc-2', 'slot-09', 48, 12);
+  const acc = makeAccount('acc-2', 'slot-09', 48, 85);
   const view: WatermarkAccountView = {
     accountId: 'acc-2',
     name: 'slot-09',
     provider: 'antigravity',
-    state: 'tight',
+    state: 'healthy',
     manualHold: 'none',
-    currentWeight: 1,
-    targetWeight: 1,
+    currentWeight: 100,
+    targetWeight: 100,
     readBackDrift: false,
     isQuarantined: false,
     isDisabled: false,
-    bindingWindow: '3p-weekly',
+    bindingWindow: 'weekly_7d',
     windows: [
       {
         key: 'gemini-weekly',
@@ -160,15 +153,6 @@ console.log('\nSuite 2: Multi-window tight (secondary window breached)');
         projectedRemainingPct: 48,
         resetsAt: '2026-11-20T12:00:00Z',
         resetSecondsRemaining: 3600,
-        isBinding: false,
-      },
-      {
-        key: '3p-weekly',
-        label: 'Claude and GPT models',
-        currentRemainingPct: 12,
-        projectedRemainingPct: 12,
-        resetsAt: '2026-11-20T12:00:00Z',
-        resetSecondsRemaining: 3600,
         isBinding: true,
       },
     ],
@@ -180,76 +164,26 @@ console.log('\nSuite 2: Multi-window tight (secondary window breached)');
 
   const data = makePanelData([acc], [view]);
   const reason = reasonOf(data, acc);
-  assert(!reason.includes('48%, at or below'), 'Does NOT claim 48% is at or below 20%');
-  assert(reason.includes('Claude and GPT models at 12%, at or below the policy drain level (20%)'), 'Correctly attributes tight state to the breached Claude/GPT window');
+  assert(reason.includes('Lowest quota: Gemini · Weekly at 48%.'), 'Correctly attributes healthy state to lowest quota');
 }
 
-// Suite 3: Tight when displayed window > 20% due to predictive velocity burn rate
-console.log('\nSuite 3: Predictive velocity tripwire tight');
+// Suite 3: Cooldown account reasoning
+console.log('\nSuite 3: Cooldown account reasoning');
 {
   const acc = makeAccount('acc-3', 'slot-06', 75);
   const view: WatermarkAccountView = {
     accountId: 'acc-3',
     name: 'slot-06',
     provider: 'antigravity',
-    state: 'tight',
-    manualHold: 'none',
-    currentWeight: 1,
-    targetWeight: 1,
+    state: 'airgapped',
+    manualHold: 'airgap',
+    currentWeight: 0,
+    targetWeight: 0,
     readBackDrift: false,
-    isQuarantined: false,
-    isDisabled: false,
+    isQuarantined: true,
+    isDisabled: true,
     bindingWindow: 'weekly_7d',
-    windows: [
-      {
-        key: 'weekly_7d',
-        label: 'Gemini · Weekly',
-        currentRemainingPct: 75,
-        projectedRemainingPct: 18,
-        resetsAt: '2026-11-20T12:00:00Z',
-        resetSecondsRemaining: 3600,
-        isBinding: true,
-      },
-    ],
-    burnRatePerMin: 10.2,
-    runwayMinutes: 8,
-    recentRequests5m: 50,
-    recentErrors15m: { http429: 0, http5xx: 0 },
-  };
-
-  const data = makePanelData([acc], [view]);
-  const reason = reasonOf(data, acc);
-  assert(!reason.includes('75%, at or below'), 'Does NOT claim 75% is at or below 20%');
-  assert(reason.includes('High request velocity: projected to reach the drain level (20%) in ~8m'), 'Correctly explains predictive velocity drain');
-}
-
-// Suite 4: Tight when displayed window > 20% due to policy drain hold (staleness / fallback)
-console.log('\nSuite 4: Routing policy drain hold');
-{
-  const acc = makeAccount('acc-4', 'slot-02', 80);
-  const view: WatermarkAccountView = {
-    accountId: 'acc-4',
-    name: 'slot-02',
-    provider: 'antigravity',
-    state: 'draining',
-    manualHold: 'none',
-    currentWeight: 1,
-    targetWeight: 1,
-    readBackDrift: false,
-    isQuarantined: false,
-    isDisabled: false,
-    bindingWindow: 'weekly_7d',
-    windows: [
-      {
-        key: 'weekly_7d',
-        label: 'Gemini · Weekly',
-        currentRemainingPct: 80,
-        projectedRemainingPct: 80,
-        resetsAt: '2026-11-20T12:00:00Z',
-        resetSecondsRemaining: 3600,
-        isBinding: true,
-      },
-    ],
+    windows: [],
     burnRatePerMin: 0,
     runwayMinutes: null,
     recentRequests5m: 0,
@@ -258,8 +192,17 @@ console.log('\nSuite 4: Routing policy drain hold');
 
   const data = makePanelData([acc], [view]);
   const reason = reasonOf(data, acc);
-  assert(!reason.includes('80%, at or below'), 'Does NOT claim 80% is at or below 20%');
-  assert(reason.includes('Draining traffic under routing policy (Gemini · Weekly at 80%)'), 'Explains routing policy drain hold cleanly');
+  assert(reason.includes('Taken out of rotation by an admin. Not receiving traffic.'), 'Correctly explains admin cooldown hold');
+}
+
+// Suite 4: Rate-limited account
+console.log('\nSuite 4: Rate-limited account');
+{
+  const acc = makeAccount('acc-4', 'slot-02', 80);
+  acc.latestSnapshot!.status = 'rate_limited';
+  const data = makePanelData([acc], []);
+  const reason = reasonOf(data, acc);
+  assert(reason.includes('The provider is rate-limiting this account, so callers may get 429 errors.'), 'Explains rate limited status cleanly');
 }
 
 // Suite 5: Exhausted handling when displayed window > 2%

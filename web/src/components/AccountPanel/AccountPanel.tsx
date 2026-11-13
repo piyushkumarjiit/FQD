@@ -141,6 +141,14 @@ export const AccountPanel: React.FC<{
 
         <div className="why" style={{ borderLeft: `3px solid ${STATUS_COLOR[st]}` }}>{reasonOf(data, a)}</div>
 
+        {st === 'tos' && (
+          <div className="d-banner d-banner-tos">
+            <b>Google 403 TOS Restriction</b><br />
+            Google 403 TOS notice · Appeal submitted. Polling paused in cooldown to protect account.<br />
+            <small style={{ opacity: 0.85 }}>Appeal submitted. Routing &amp; quota polling paused in cooldown to protect account.</small>
+          </div>
+        )}
+
         <div className="d-sec" style={{ marginTop: 14 }}>
           <h4>Quota</h4>
           {buckets.length ? (
@@ -154,7 +162,20 @@ export const AccountPanel: React.FC<{
           <h4>Proxy traffic</h4>
           {fromCliproxy && tele ? (
             <>
-              <div className="kv"><span className="muted">CLIProxy status</span><b>{tele.disabled ? 'Disabled' : tele.proxyStatus ? tele.proxyStatus[0].toUpperCase() + tele.proxyStatus.slice(1) : 'Active'}</b></div>
+              <div className="kv">
+                <span className="muted">CLIProxy status</span>
+                <b>
+                  {st === 'tos' ? (
+                    <span style={{ color: 'var(--tos)' }}>403 TOS Violation (Paused)</span>
+                  ) : tele.disabled ? (
+                    'Disabled'
+                  ) : tele.proxyStatus ? (
+                    tele.proxyStatus[0].toUpperCase() + tele.proxyStatus.slice(1)
+                  ) : (
+                    'Active'
+                  )}
+                </b>
+              </div>
               <div className="kv"><span className="muted">Requests (last hour)</span><b>{fmtNum(tele.requestsLastHour ?? 0)} ({fmtNum(tele.failedLastHour ?? 0)} failed)</b></div>
               <div className="kv"><span className="muted">Requests (since proxy start)</span><b>{fmtNum(tele.successCount ?? 0)} ok / {fmtNum(tele.failedCount ?? 0)} failed</b></div>
               {tele.totalTokens > 0 && <div className="kv"><span className="muted">Tokens (last 24 h)</span><b>{fmtCompact(tele.totalTokens)}</b></div>}
@@ -165,6 +186,11 @@ export const AccountPanel: React.FC<{
                 </div>
               ))}
             </>
+          ) : st === 'tos' ? (
+            <div className="kv">
+              <span className="muted">CLIProxy status</span>
+              <b><span style={{ color: 'var(--tos)' }}>403 TOS Violation (Paused)</span></b>
+            </div>
           ) : (
             <p className="muted small" style={{ margin: 0 }}>
               {fromCliproxy

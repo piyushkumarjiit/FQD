@@ -379,6 +379,7 @@ export function computeWatermarkTargets(
   const invariantViolations: InvariantViolation[] = [];
 
   const intervalSec = policy.intervalSec ?? DEFAULT_INTERVAL_SEC;
+  const staleThresholdSec = Math.max(300, intervalSec * 2.5);
   const applyLatencySec = policy.applyLatencySec ?? DEFAULT_APPLY_LATENCY_SEC;
   const horizonSec = intervalSec + applyLatencySec;
   const burnRateMax = policy.burnRateMax ?? DEFAULT_BURN_RATE_MAX;
@@ -424,8 +425,8 @@ export function computeWatermarkTargets(
     const nonDirectPool = pool.filter((s) => s.modality !== 'direct_api' && s.modality !== 'budgeted_allowance');
     if (nonDirectPool.length === 0) continue;
 
-    // 2. Telemetry staleness check for pool (all stale > 300s -> fail_static)
-    const allStale = nonDirectPool.length > 0 && nonDirectPool.every((s) => s.stalenessSec > 300);
+    // 2. Telemetry staleness check for pool (all stale > staleThresholdSec -> fail_static)
+    const allStale = nonDirectPool.length > 0 && nonDirectPool.every((s) => s.stalenessSec > staleThresholdSec);
     const tierKey = `${provider}:pro`;
 
     if (allStale) {
@@ -503,7 +504,7 @@ export function computeWatermarkTargets(
       const quotaEff = snap.quotaEffectivePct;
       const quotaProj = projectQuota(quotaEff, snap.burnRatePerMin, snap.stalenessSec, horizonSec, burnRateMax);
 
-      const isStale = snap.stalenessSec > 300;
+      const isStale = snap.stalenessSec > staleThresholdSec;
 
       // Determine initial state based on precedence
       let st: AccountEngineStateKind = 'healthy';
@@ -607,7 +608,7 @@ export function computeWatermarkTargets(
       // Exclude stale accounts (>300s) from recoveredCount
       let recoveredCount = 0;
       for (const snap of managedProSnaps) {
-        const isStale = snap.stalenessSec > 300;
+        const isStale = snap.stalenessSec > staleThresholdSec;
         if (!snap.isCooldown && !isStale && snap.quotaEffectivePct >= proCfg.drainRecoveryPct) {
           recoveredCount++;
         }
@@ -786,7 +787,7 @@ export function computeWatermarkTargets(
             nonProCfg.hardStopRecoveryPct,
             wasHardStop
           );
-          const isStale = snap.stalenessSec > 300;
+          const isStale = snap.stalenessSec > staleThresholdSec;
           const wasDrain = prev?.state === 'drain';
           const inDrain = evalDrain(
             quotaEff,
@@ -818,7 +819,7 @@ export function computeWatermarkTargets(
             nonProCfg.hardStopRecoveryPct,
             wasHardStop
           );
-          const isStale = snap.stalenessSec > 300;
+          const isStale = snap.stalenessSec > staleThresholdSec;
           const wasDrain = prev?.state === 'drain';
           const inDrain = evalDrain(
             quotaEff,
@@ -869,7 +870,7 @@ export function computeWatermarkTargets(
             reason = 'hard_stop';
             state = 'hard_stop';
             isEmergency = true;
-          } else if (snap.stalenessSec > 300) {
+          } else if (snap.stalenessSec > staleThresholdSec) {
             targetWeight = 0;
             reason = 'stale_telemetry';
             state = 'unknown';
@@ -949,7 +950,7 @@ export function computeWatermarkTargets(
             reason = 'hard_stop';
             state = 'hard_stop';
             isEmergency = true;
-          } else if (snap.stalenessSec > 300) {
+          } else if (snap.stalenessSec > staleThresholdSec) {
             targetWeight = 0;
             reason = 'stale_telemetry';
             state = 'unknown';

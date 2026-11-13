@@ -21,7 +21,7 @@ import {
 } from '../common/bits';
 
 type StatusFilter = 'all' | 'attention' | AccountStatus;
-const STATUS_ORDER: Record<AccountStatus, number> = { exhausted: 0, tight: 1, cooldown: 2, healthy: 3 };
+const STATUS_ORDER: Record<AccountStatus, number> = { exhausted: 0, tos: 1, cooldown: 2, healthy: 3 };
 const SORT_LABEL: Record<string, string> = {
   name: 'account',
   provider: 'provider',
@@ -44,7 +44,7 @@ export const AccountsPage: React.FC<{ data: PanelData; route: Route; openAccount
 
   const status = (a: Account) => statusOf(data, a);
   const matchStatus = (a: Account, f: StatusFilter) =>
-    f === 'all' || (f === 'attention' ? status(a) === 'exhausted' || status(a) === 'tight' : status(a) === f);
+    f === 'all' || (f === 'attention' ? status(a) === 'exhausted' || status(a) === 'tos' : status(a) === f);
   const counts = (f: StatusFilter) => data.accounts.filter((a) => matchStatus(a, f)).length;
 
   const key = (a: Account): string | number => {
@@ -77,8 +77,12 @@ export const AccountsPage: React.FC<{ data: PanelData; route: Route; openAccount
   if (sort !== 'slot') chips.push(['sort', `Sorted by ${SORT_LABEL[sort] ?? sort} (${dir === 'asc' ? 'lowest first' : 'highest first'})`]);
 
   const families = [...new Set(data.accounts.map(familyOf))].sort();
-  const statusButton = (f: StatusFilter, label: string) => (
-    <button key={f} className={st === f ? 'on' : ''} onClick={() => setParams({ status: f === 'all' ? null : f })}>
+  const statusButton = (f: StatusFilter, label: string, extraClass = '') => (
+    <button
+      key={f}
+      className={`${st === f ? 'on' : ''} ${extraClass}`.trim()}
+      onClick={() => setParams({ status: f === 'all' ? null : f })}
+    >
       {label}<span className="n">{counts(f)}</span>
     </button>
   );
@@ -100,9 +104,9 @@ export const AccountsPage: React.FC<{ data: PanelData; route: Route; openAccount
           {statusButton('all', 'All')}
           {statusButton('attention', 'Needs attention')}
           {statusButton('healthy', 'Healthy')}
-          {statusButton('tight', 'Tight')}
           {statusButton('exhausted', 'Exhausted')}
           {statusButton('cooldown', 'Cooldown')}
+          {statusButton('tos', 'TOS', 'btn-tos')}
         </div>
         <select className="sel" aria-label="Provider" value={prov} onChange={(e) => setParams({ provider: e.target.value || null })}>
           <option value="">All providers</option>
