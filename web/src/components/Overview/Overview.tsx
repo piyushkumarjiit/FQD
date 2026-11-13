@@ -260,11 +260,13 @@ export const Overview: React.FC<{ data: PanelData; openAccount: (id: string) => 
                     </div>
                   </div>
                 </div>
-                {h !== null ? (
-                  <span style={{ fontWeight: 700, color: levelColor(h, pro) }} title="Average remaining in each account's tightest window">
-                    {h}%
-                  </span>
-                ) : <span />}
+                <div
+                  className="prov-pct"
+                  style={{ color: h !== null ? levelColor(h, pro) : undefined }}
+                  title={h !== null ? "Average remaining in each account's tightest window" : undefined}
+                >
+                  {h !== null ? `${h}%` : ''}
+                </div>
                 {accs.length ? (
                   <div className="segs">
                     {accs.map((a) => {
