@@ -189,7 +189,7 @@ async function runTests() {
       cpaProvider: 'antigravity',
     });
     const agyUa = capturedHeaders['User-Agent'] || '';
-    assert(agyUa.startsWith('antigravity/hub/2.24.0 (aidev_client; os_type='), 'Antigravity UA starts with prefix');
+    assert(agyUa.startsWith('antigravity/hub/2.31.2 (aidev_client; os_type='), 'Antigravity UA starts with prefix');
     assert(agyUa.includes('arch='), 'Antigravity UA includes dynamic arch');
     assert(agyUa.includes('cl=1000335682'), 'Antigravity UA includes changelist');
 
