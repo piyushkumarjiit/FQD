@@ -173,7 +173,7 @@ if (cpaConfig) {
 const quotaCache = new QuotaCache(
   () => store.listAccounts(),
   () => ({
-    intervalSec: tracker.intervalMin() * 60,
+    intervalSec: (tracker.intervalMin() || 15) * 60,
     cpaStatus: cpaSync ? cpaSync.status() : null,
     cpaLinks: store.listCpaLinks(),
     cpaRouting: cpaWatermarkService

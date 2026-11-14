@@ -379,7 +379,7 @@ async function handleApi(
   }
 
   if (path === '/api/refresh' && method === 'POST') {
-    await tracker.syncAll();
+    await tracker.syncAll(true);
     return send(res, 200, { ok: true });
   }
 
@@ -703,6 +703,11 @@ async function handleApi(
 
   if (path === '/api/settings' && method === 'PUT') {
     const body = await readBody(req);
+    if (typeof body.pollingMode === 'string') {
+      if (body.pollingMode === 'manual' || body.pollingMode === 'auto') {
+        tracker.setPollingMode(body.pollingMode);
+      }
+    }
     if (typeof body.intervalMin === 'number') tracker.setIntervalMin(body.intervalMin);
     let routingConfig: RoutingConfig | undefined;
     if (body.cpaRouting !== undefined) {
@@ -716,6 +721,7 @@ async function handleApi(
     return send(res, 200, {
       ok: true,
       intervalMin: tracker.intervalMin(),
+      pollingMode: tracker.isPollingPaused() ? 'manual' : 'auto',
       ...(routingConfig ? { cpaRouting: routingConfig } : {}),
     });
   }

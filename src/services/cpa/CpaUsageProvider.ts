@@ -25,7 +25,7 @@ export function isTerminalQuarantineError(body: unknown): { isQuarantined: boole
   if (str.includes('TOS_VIOLATION') || lower.includes('tos_violation')) {
     return { isQuarantined: true, reason: 'Terms of Service violation (TOS_VIOLATION)' };
   }
-  if (str.includes('invalid_grant') || lower.includes('invalid_grant')) {
+  if (str.includes('invalid_grant') || lower.includes('invalid_grant') || lower.includes('invalid grant')) {
     return { isQuarantined: true, reason: 'Token revoked or invalid grant (invalid_grant)' };
   }
   if (lower.includes('only authorized for use with claude code')) {

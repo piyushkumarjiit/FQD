@@ -39,6 +39,8 @@ export class Tracker {
   lastSyncAllAt: string | null = null;
   cpaJitterEnabled: boolean = true;
   cpaJitterMaxMs?: number;
+  cpaInterAccountDelayMinMs: number = 2000;
+  cpaInterAccountDelayMaxMs: number = 5000;
 
   constructor(private store: Store, private cpaProvider?: UsageProvider) {}
 
@@ -83,25 +85,54 @@ export class Tracker {
 
   /* ---------------- Polling ---------------- */
 
+  isPollingPaused(): boolean {
+    const mode = this.store.getSetting('polling_mode');
+    if (mode === 'manual') return true;
+    const raw = this.store.getSetting('interval_min');
+    if (raw !== null && Number(raw) === 0) return true;
+    return false;
+  }
+
   intervalMin(): number {
-    const raw = Number(this.store.getSetting('interval_min')) || Number(process.env.POLL_INTERVAL_MIN) || 5;
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 5) {
-      return raw;
-    }
-    return 5;
+    const raw = Number(this.store.getSetting('interval_min'));
+    if (raw === 0) return 0;
+    const fallback = Number(process.env.POLL_INTERVAL_MIN) || 5;
+    const val = Number.isFinite(raw) && raw > 0 ? raw : fallback;
+    return Math.max(5, Math.min(120, Math.round(val)));
   }
 
   setIntervalMin(min: number): void {
-    const safeMin = typeof min === 'number' && Number.isFinite(min) ? min : 5;
-    const clamped = Math.max(5, Math.min(120, Math.round(safeMin)));
-    this.store.setSetting('interval_min', String(clamped));
+    if (typeof min === 'number' && Number.isFinite(min) && min === 0) {
+      this.store.setSetting('interval_min', '0');
+      this.store.setSetting('polling_mode', 'manual');
+    } else {
+      const safeMin = typeof min === 'number' && Number.isFinite(min) ? min : 5;
+      const clamped = Math.max(5, Math.min(120, Math.round(safeMin)));
+      this.store.setSetting('interval_min', String(clamped));
+      this.store.setSetting('polling_mode', 'auto');
+    }
+    this.start();
+  }
+
+  setPollingMode(mode: 'auto' | 'manual'): void {
+    if (mode === 'manual') {
+      this.store.setSetting('polling_mode', 'manual');
+      this.store.setSetting('interval_min', '0');
+    } else {
+      this.store.setSetting('polling_mode', 'auto');
+      if (this.store.getSetting('interval_min') === '0') {
+        this.store.setSetting('interval_min', '15');
+      }
+    }
     this.start();
   }
 
   start(): void {
     this.stop();
-    this.scheduleNextSync();
-    this.syncAll().catch(() => {});
+    if (!this.isPollingPaused()) {
+      this.scheduleNextSync();
+      this.syncAll().catch(() => {});
+    }
     // Keep roughly 13 months of history
     this.store.pruneHistory(Date.now() - 400 * 86400 * 1000);
   }
@@ -119,7 +150,11 @@ export class Tracker {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.isPollingPaused()) {
+      return;
+    }
     const baseMs = this.intervalMin() * 60 * 1000;
+    if (baseMs <= 0) return;
     let intervalMs = baseMs;
     if (this.cpaJitterEnabled) {
       // ±20-30% jitter: random factor between 0.70 and 1.30
@@ -175,7 +210,10 @@ export class Tracker {
     }
   }
 
-  syncAll(): Promise<void> {
+  syncAll(force = false): Promise<void> {
+    if (!force && this.isPollingPaused()) {
+      return Promise.resolve();
+    }
     if (this.inFlightSyncAll) {
       return this.inFlightSyncAll;
     }
@@ -191,25 +229,32 @@ export class Tracker {
       if (a.lastStatus === 'quarantined') return false;
       const creds = this.store.getCredentials(a.id);
       if (creds?.quarantined || creds?.cpaRisk === 'suspended') return false;
+
+      // Never poll accounts with active manual holds (airgap or quarantine)
+      const manualHold = this.store.getManualHold(a.id);
+      if (manualHold) return false;
+
       if (creds?.authType === 'cpa') {
         const link = this.store.getCpaLink(a.id);
         if (link && link.state === 'unlinked') return false;
         if (creds.cpaStatus === 'disabled') {
           const owner = holdOwner(this.store, a.id);
-          if (owner !== 'fqd' && owner !== 'operator') return false;
+          // Only FQD's automated reset-probe may poll disabled accounts, never external or operator holds
+          if (owner !== 'fqd') return false;
         }
       }
       return true;
     });
 
-    const intervalMs = this.intervalMin() * 60 * 1000;
-    const maxJitter = this.cpaJitterMaxMs !== undefined ? this.cpaJitterMaxMs : Math.min(intervalMs * 0.1, 5000);
-
-    const promises = eligibleAccounts.map(async (acc, idx) => {
+    for (let idx = 0; idx < eligibleAccounts.length; idx++) {
+      const acc = eligibleAccounts[idx];
       if (this.cpaJitterEnabled && idx > 0) {
-        const jitter = Math.floor(Math.random() * maxJitter) + (idx * 200);
-        if (jitter > 0) {
-          await new Promise((res) => setTimeout(res, jitter));
+        // Slow random delay between accounts so quota probes never burst in a single wave
+        const minDelay = this.cpaInterAccountDelayMinMs;
+        const maxDelay = Math.max(minDelay, this.cpaInterAccountDelayMaxMs);
+        const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+        if (delay > 0) {
+          await new Promise((res) => setTimeout(res, delay));
         }
       }
       try {
@@ -217,9 +262,8 @@ export class Tracker {
       } catch {
         // Handled inside sync()
       }
-    });
+    }
 
-    await Promise.allSettled(promises);
     this.lastSyncAllAt = new Date().toISOString();
 
     for (const cb of this.onSyncAllCallbacks) {
@@ -245,6 +289,12 @@ export class Tracker {
     if (!account) return;
     const creds = this.store.getCredentials(accountId) || {};
 
+    // Never poll accounts with active manual holds (airgap or quarantine)
+    const manualHold = this.store.getManualHold(accountId);
+    if (manualHold) {
+      return;
+    }
+
     // Skip quota fetching if account is quarantined, suspended, disabled, or unlinked
     if (creds.quarantined || account.lastStatus === 'quarantined' || creds.cpaRisk === 'suspended') {
       return;
@@ -263,7 +313,7 @@ export class Tracker {
       }
       if (creds.cpaStatus === 'disabled') {
         const owner = holdOwner(this.store, accountId);
-        if (owner !== 'fqd' && owner !== 'operator') {
+        if (owner !== 'fqd') {
           return;
         }
       }

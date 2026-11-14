@@ -104,7 +104,8 @@ export const SettingsPage: React.FC<{
           <div className="section-head"><h2>Preferences</h2></div>
           <div className="pref" style={{ paddingTop: 0 }}>
             <strong style={{ flex: 1 }}>Auto-refresh interval</strong>
-            <select className="sel" aria-label="Auto-refresh interval" value={data.intervalMin || 15} disabled={busy} onChange={(e) => changeInterval(Number(e.target.value))}>
+            <select className="sel" aria-label="Auto-refresh interval" value={data.intervalMin ?? 15} disabled={busy} onChange={(e) => changeInterval(Number(e.target.value))}>
+              <option value={0}>Manual only (never auto-refresh)</option>
               <option value={5}>Every 5 minutes</option>
               <option value={15}>Every 15 minutes</option>
               <option value={30}>Every 30 minutes</option>

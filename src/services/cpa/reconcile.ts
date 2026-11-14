@@ -1,5 +1,6 @@
 import type { AccountCredentials, AccountEntity, ProviderType } from '../../models/types';
 import type { CpaCredential } from './types';
+import { isTerminalQuarantineError } from './CpaUsageProvider';
 
 export type ServerAccount = AccountEntity;
 
@@ -150,6 +151,8 @@ export function reconcile(
       );
     }
 
+    const termQuarantine = isTerminalQuarantineError(entry.status_message);
+
     if (matchedLink) {
       matchedLinkAccountIds.add(matchedLink.accountId);
       seen.add(matchedLink.accountId);
@@ -197,6 +200,13 @@ export function reconcile(
         cpaStatus,
         email: entry.email || acc?.email,
         plan: planOf(entry) || acc?.plan,
+        ...(termQuarantine.isQuarantined
+          ? {
+              quarantined: true,
+              cpaRisk: 'suspended',
+              quarantineReason: termQuarantine.reason,
+            }
+          : {}),
       };
 
       if (isUnlinked) {
@@ -205,7 +215,10 @@ export function reconcile(
 
         if (acc) {
           acc.isActive = true;
-          if (statusHintRequiresReauth) {
+          if (termQuarantine.isQuarantined) {
+            acc.lastStatus = 'quarantined';
+            acc.lastError = entry.status_message || termQuarantine.reason;
+          } else if (statusHintRequiresReauth) {
             acc.lastStatus = 'reauth_required';
             acc.lastError =
               entry.status_message || 'Re-authentication required in CLIProxy';
@@ -226,7 +239,12 @@ export function reconcile(
         const statusChanged = !existingCred || existingCred.cpaStatus !== cpaStatus;
         let changed = wasRenamedOrReindexed || statusChanged;
         if (acc) {
-          if (statusHintRequiresReauth && acc.lastStatus !== 'reauth_required') {
+          if (termQuarantine.isQuarantined && acc.lastStatus !== 'quarantined') {
+            acc.lastStatus = 'quarantined';
+            acc.lastError = entry.status_message || termQuarantine.reason;
+            accountUpserts.push({ ...acc });
+            changed = true;
+          } else if (statusHintRequiresReauth && acc.lastStatus !== 'reauth_required' && acc.lastStatus !== 'quarantined') {
             acc.lastStatus = 'reauth_required';
             acc.lastError =
               entry.status_message || 'Re-authentication required in CLIProxy';
@@ -234,7 +252,8 @@ export function reconcile(
             changed = true;
           } else if (
             !statusHintRequiresReauth &&
-            acc.lastStatus === 'reauth_required' &&
+            !termQuarantine.isQuarantined &&
+            (acc.lastStatus === 'reauth_required' || acc.lastStatus === 'quarantined') &&
             statusChanged
           ) {
             acc.lastStatus = 'idle';
@@ -316,7 +335,10 @@ export function reconcile(
       };
 
       adoptedAccount.isActive = true;
-      if (statusHintRequiresReauth) {
+      if (termQuarantine.isQuarantined) {
+        adoptedAccount.lastStatus = 'quarantined';
+        adoptedAccount.lastError = entry.status_message || termQuarantine.reason;
+      } else if (statusHintRequiresReauth) {
         adoptedAccount.lastStatus = 'reauth_required';
         adoptedAccount.lastError =
           entry.status_message || 'Re-authentication required in CLIProxy';
@@ -383,6 +405,13 @@ export function reconcile(
       cpaStatus,
       email: entry.email || undefined,
       plan: planOf(entry) || undefined,
+      ...(termQuarantine.isQuarantined
+        ? {
+            quarantined: true,
+            cpaRisk: 'suspended',
+            quarantineReason: termQuarantine.reason,
+          }
+        : {}),
     };
 
     const newAccount: ServerAccount = {
@@ -394,10 +423,16 @@ export function reconcile(
       orderIndex: ++maxOrderIndex,
       isActive: true,
       lastSyncAt: undefined,
-      lastStatus: statusHintRequiresReauth ? 'reauth_required' : 'idle',
-      lastError: statusHintRequiresReauth
-        ? entry.status_message || 'Re-authentication required in CLIProxy'
-        : undefined,
+      lastStatus: termQuarantine.isQuarantined
+        ? 'quarantined'
+        : statusHintRequiresReauth
+          ? 'reauth_required'
+          : 'idle',
+      lastError: termQuarantine.isQuarantined
+        ? entry.status_message || termQuarantine.reason
+        : statusHintRequiresReauth
+          ? entry.status_message || 'Re-authentication required in CLIProxy'
+          : undefined,
       createdAt: new Date(now).toISOString(),
       latestSnapshot: undefined,
     };

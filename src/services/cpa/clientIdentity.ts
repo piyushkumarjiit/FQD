@@ -9,7 +9,7 @@ export const CODEX_USER_AGENT = 'codex_cli_rs/0.159.0 (terminal)';
  * Derives Antigravity User-Agent dynamically from Node process platform and architecture.
  * Default version 2.24.0 matches CPA's fallback constant and changelist 1000335682.
  */
-export function getAntigravityUserAgent(version = '2.24.0', cl = '1000335682'): string {
+export function getAntigravityUserAgent(version = '2.31.2', cl = '1000335682'): string {
   const proc = (globalThis as any).process;
   const platform = proc?.platform;
   const procArch = proc?.arch;

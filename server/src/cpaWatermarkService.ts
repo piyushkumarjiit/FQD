@@ -316,6 +316,20 @@ export class CpaWatermarkService {
       }
     }
 
+    // Enforce active manual holds if CLIProxy state has drifted
+    for (const link of links) {
+      const hold = this.store.getManualHold(link.accountId, currentNow);
+      if (hold && (hold.holdType === 'airgap' || hold.holdType === 'quarantine')) {
+        const entry = cpaEntries.find((e) => e.name === link.cpaName || e.auth_index === link.authIndex);
+        if (entry && (entry.disabled !== true || entry.weight !== 0)) {
+          console.warn(`[cpaWatermarkService] Re-enforcing active ${hold.holdType} on ${link.cpaName} (detected drift: disabled=${entry.disabled}, weight=${entry.weight})`);
+          await applyDualBarrier(this.transport, link.cpaName, hold.holdType === 'airgap' ? 'airgapped' : 'quarantined', 0);
+          entry.disabled = true;
+          entry.weight = 0;
+        }
+      }
+    }
+
     // Build snapshots
     const snapshots = this.buildSnapshots(cpaEntries, policy, currentNow);
 
@@ -444,13 +458,19 @@ export class CpaWatermarkService {
       const currentEntryWeight: number | null =
         typeof entry?.weight === 'number' ? entry.weight : null;
 
-      // Human edit detection: if entry.weight !== link.routing?.applied, mark unmanaged
+      const activeHold = this.store.getManualHold(link.accountId, currentNow) !== null;
+
+      // Human edit detection: if entry.weight !== link.routing?.applied, mark unmanaged (unless under active operator hold)
       if (
+        !activeHold &&
         entry &&
         routing.applied != null &&
         currentEntryWeight !== routing.applied
       ) {
         routing.managed = false;
+        this.store.updateCpaLinkRouting(link.accountId, routing);
+      } else if (activeHold && routing.managed === false) {
+        routing.managed = true;
         this.store.updateCpaLinkRouting(link.accountId, routing);
       }
 
@@ -463,7 +483,6 @@ export class CpaWatermarkService {
       );
 
       const isEntryDisabled = Boolean(entry && (entry.disabled === true || entry.status === 'disabled'));
-      const activeHold = this.store.getManualHold(link.accountId, currentNow) !== null;
       const owner = holdOwnerOf({ disabled: isEntryDisabled, routing, activeHold });
 
       let managedForRun = isManaged && classification.managed;
