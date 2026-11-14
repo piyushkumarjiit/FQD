@@ -721,7 +721,7 @@ async function handleApi(
     return send(res, 200, {
       ok: true,
       intervalMin: tracker.intervalMin(),
-      pollingMode: tracker.isPollingPaused() ? 'manual' : 'auto',
+      pollingMode: tracker.isPollingPaused?.() ? 'manual' : 'auto',
       ...(routingConfig ? { cpaRouting: routingConfig } : {}),
     });
   }

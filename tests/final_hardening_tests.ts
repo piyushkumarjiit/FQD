@@ -68,6 +68,8 @@ function fakeTracker(overrides: Record<string, unknown> = {}): Tracker {
     setIntervalMin: () => {},
     syncAll: async () => {},
     sync: async () => {},
+    isPollingPaused: () => false,
+    setPollingMode: () => {},
     startOAuth: () => {
       throw new Error('not available');
     },
